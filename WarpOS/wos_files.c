@@ -9,7 +9,6 @@
  */
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "../Gamecube/fileBrowser/fileBrowser.h"
 #include "wos_files.h"
@@ -29,16 +28,21 @@ static int wos_file_deinit(fileBrowser_file *f)
     return 0;
 }
 
+/* The size by seeking: newlib's stat() path has faulted under MOS2WOS
+ * (quake3amiga's directory scan). */
 int wos_file_open(fileBrowser_file *file)
 {
-    struct stat st;
-    if (!stat(file->name, &st)) {
-        file->offset = 0;
-        file->discoffset = 0;
-        file->size = st.st_size;
-        return 0;
-    }
-    return FILE_BROWSER_ERROR_NO_FILE;
+    FILE *f = fopen(file->name, "rb");
+    long size;
+    if (!f)
+        return FILE_BROWSER_ERROR_NO_FILE;
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fclose(f);
+    file->offset = 0;
+    file->discoffset = 0;
+    file->size = size < 0 ? 0 : (unsigned int)size;
+    return 0;
 }
 
 static int wos_file_seek(fileBrowser_file *file, unsigned int where, unsigned int type)

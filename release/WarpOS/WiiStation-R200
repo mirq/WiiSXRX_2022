@@ -1,0 +1,23 @@
+.KEY image,args/F
+; WiiStation (PlayStation emulator) for WarpOS on Radeon 9200 (MiniGL R200).
+; Run from the WiiStation directory:  Execute WiiStation-R200 [image] [Key=value ...]
+; With no image an ASL requester asks for one.
+; Boot protocol: cold boot, C:InitPPC once, then this script.
+FailAt 21
+Delete ENV:MGLPPC_LEASE QUIET
+; MINIGL_CTILE stays unset: GlesGpu reads the framebuffer back, and a tiled
+; render target reads back scrambled.
+Delete ENV:MINIGL_CTILE QUIET
+SetEnv MGLPPC_NOALTIVEC 1
+; The PPC emits the GPU command stream: also what MiniGL's B-F blending and
+; 2x texture scale need.
+SetEnv MGLPPC_CPEMIT 1
+SetEnv MGLPPC_HOSTPRI -1
+; GPU-side present copy: the back buffer keeps its pixels after a present,
+; as the Wii's EFB does.
+SetEnv MGLPPC_CPPRESENT 1
+Stack 65536
+Run >NIL: minigl_ppc_host >NIL:
+Wait 6
+Stack 1048576
+WiiStation "<image>" <args>

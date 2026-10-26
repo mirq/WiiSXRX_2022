@@ -29,11 +29,69 @@ extern struct Library *PowerPCBase;
 
 /* ---- The clock -------------------------------------------------------- */
 
+/* The PPC's time base, read without leaving the PPC. GetSysTimePPC has
+ * crashed from a MOS2WOS PPC task on the A4000/MPC7410 (quake3amiga's
+ * finding), so the time base is the default; its rate (bus/4, about 24.74 MHz
+ * there) is measured against DateStamp about once a second, as quake3amiga's
+ * Sys_Milliseconds does. SetEnv WSX_CLOCK sys selects GetSysTimePPC. */
+static uint64_t read_timebase(void)
+{
+    uint32_t hi, lo, hi2;
+    do {
+        __asm__ volatile("mftbu %0" : "=r"(hi));
+        __asm__ volatile("mftb  %0" : "=r"(lo));
+        __asm__ volatile("mftbu %0" : "=r"(hi2));
+    } while (hi != hi2);
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static int64_t datestamp_ticks(void)        /* 1/50 s */
+{
+    struct DateStamp ds;
+    DateStamp(&ds);
+    return (int64_t)ds.ds_Days * 4320000 + (int64_t)ds.ds_Minute * 3000 + ds.ds_Tick;
+}
+
+static int      s_clock_sys = -1;
+static uint64_t s_tb_hz = 24740000u;
+static uint64_t s_tb_last, s_tb_cal0, s_tb_cal_last;
+static int64_t  s_ds_cal0;
+static uint64_t s_us, s_us_rem;             /* rem: in 1/1000000 time-base ticks */
+
 uint64_t wos_now_us(void)
 {
-    struct timeval tv;
-    GetSysTimePPC(&tv);
-    return (uint64_t)tv.tv_secs * 1000000u + tv.tv_micro;
+    uint64_t tb, step;
+
+    if (s_clock_sys < 0) {
+        const char *v = getenv("WSX_CLOCK");
+        s_clock_sys = (v && !strcmp(v, "sys")) ? 1 : 0;
+    }
+    if (s_clock_sys) {
+        struct timeval tv;
+        GetSysTimePPC(&tv);
+        return (uint64_t)tv.tv_secs * 1000000u + tv.tv_micro;
+    }
+
+    tb = read_timebase();
+    if (!s_tb_last) {
+        s_tb_last = s_tb_cal0 = s_tb_cal_last = tb;
+        s_ds_cal0 = datestamp_ticks();
+        return 0;
+    }
+    if (tb - s_tb_cal_last >= s_tb_hz) {
+        int64_t ds = datestamp_ticks() - s_ds_cal0;
+        s_tb_cal_last = tb;
+        if (ds >= 50) {
+            uint64_t hz = (tb - s_tb_cal0) * 50u / (uint64_t)ds;
+            if (hz >= 15000000u && hz <= 100000000u)
+                s_tb_hz = hz;
+        }
+    }
+    step = (tb - s_tb_last) * 1000000u + s_us_rem;
+    s_tb_last = tb;
+    s_us += step / s_tb_hz;
+    s_us_rem = step % s_tb_hz;
+    return s_us;
 }
 
 void wos_wait_until_us(uint64_t t)
@@ -173,6 +231,23 @@ void wos_leave_progdir(void)
         UnLock(s_progdir_lock);
         s_in_progdir = 0;
     }
+}
+
+void wos_make_absolute(char *path, unsigned size)
+{
+    char buf[512];
+    BPTR lock;
+
+    if (!path[0] || strchr(path, ':'))
+        return;
+    lock = Lock((STRPTR)path, ACCESS_READ);
+    if (!lock)
+        return;
+    if (NameFromLock(lock, (STRPTR)buf, sizeof(buf))) {
+        strncpy(path, buf, size - 1);
+        path[size - 1] = 0;
+    }
+    UnLock(lock);
 }
 
 /* ---- The image requester -------------------------------------------- */

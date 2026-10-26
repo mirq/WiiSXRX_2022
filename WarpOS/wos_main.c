@@ -467,6 +467,14 @@ int main(int argc, char **argv)
         wos_sys_shutdown();
         return 20;
     }
+
+    /* The image may be relative to the Shell's directory: name it fully
+     * before running from the program's own drawer. */
+    for (i = 1; i < argc; i++)
+        if (!strchr(argv[i], '=') && argv[i][0]) {
+            strncpy(s_image, argv[i], sizeof(s_image) - 1);
+            wos_make_absolute(s_image, sizeof(s_image));
+        }
     wos_enter_progdir();
 
     default_settings();
@@ -476,8 +484,8 @@ int main(int argc, char **argv)
         char arg[PATH_LEN + 64];
         strncpy(arg, argv[i], sizeof(arg) - 1);
         arg[sizeof(arg) - 1] = 0;
-        if (!strchr(arg, '=') || !set_option(arg))
-            strncpy(s_image, argv[i], sizeof(s_image) - 1);
+        if (strchr(arg, '=') && !set_option(arg))
+            wos_log("unknown setting %s", argv[i]);
     }
     apply_settings();
     s_auto_frames = wos_env_int("WSX_AUTOFRAMES", 0);

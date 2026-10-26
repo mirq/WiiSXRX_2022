@@ -37,6 +37,10 @@ void     wos_free_ppc(void *p);
 void     wos_enter_progdir(void);
 void     wos_leave_progdir(void);
 
+/* A path relative to the current directory made absolute (Lock +
+ * NameFromLock), before wos_enter_progdir changes what it is relative to. */
+void     wos_make_absolute(char *path, unsigned size);
+
 /* An ASL file requester for a disc image; 1 with the path in buf. */
 int      wos_request_image(char *buf, unsigned size);
 
