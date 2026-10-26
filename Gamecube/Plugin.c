@@ -26,7 +26,7 @@
 #include "../plugins.h"
 #include "../spu.h"
 #include "../gpu.h"
-#ifndef __GX__
+#if !defined(__GX__) && !defined(__WARPOS__)
 #include "NoPic.h"
 #endif //!__GX__
 
@@ -279,7 +279,7 @@ void ResetPlugins() {
 	int ret;
 
 	CDR_shutdown();
-	GPU_shutdown();
+	gpuPtr->shutdown();
 	SPU_shutdown();
 	PAD1_shutdown();
 	PAD2_shutdown();
@@ -287,7 +287,7 @@ void ResetPlugins() {
 
 	ret = CDR_init();
 	if (ret < 0) { SysPrintf("CDRinit error: %d\n", ret); return; }
-	ret = GPU_init();
+	ret = gpuPtr->init();
 	if (ret < 0) { SysPrintf("GPUinit error: %d\n", ret); return; }
 	ret = SPU_init();
 	if (ret < 0) { SysPrintf("SPUinit error: %d\n", ret); return; }

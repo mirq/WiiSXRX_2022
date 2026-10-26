@@ -2,7 +2,11 @@
 #include <stdlib.h>
 #include "out.h"
 
+#ifdef __WARPOS__
+#define HAVE_AHI
+#else
 #define HAVE_SDL
+#endif
 #define MAX_OUT_DRIVERS 2
 
 static struct out_driver out_drivers[MAX_OUT_DRIVERS];
@@ -24,6 +28,9 @@ void SetupSound(void)
 #endif
 #ifdef HAVE_CUBE
 		REGISTER_DRIVER(cube);
+#endif
+#ifdef HAVE_AHI
+		REGISTER_DRIVER(ahi);
 #endif
 	}
 

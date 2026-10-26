@@ -26,7 +26,9 @@
 #include "misc.h"
 #include "ppf.h"
 #include "psxdma.h"
+#ifndef __WARPOS__
 #include <ogc/lwp_watchdog.h>
+#endif
 #include "Gamecube/DEBUG.h"
 /* logging */
 #if 0

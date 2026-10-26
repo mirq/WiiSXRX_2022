@@ -544,7 +544,11 @@ int Load(fileBrowser_file *exe) {
 // STATES
 void LoadingBar_showBar(float percent, const char* string);
 const char PcsxHeader[32] = "STv4 PCSX 3.0";
+#ifdef __WARPOS__
+char* statespath = "PROGDIR:savestates/";
+#else
 char* statespath = "/wiisxrx/savestates/";
+#endif
 static unsigned int savestates_slot = 0;
 extern unsigned char  *psxVub;
 
@@ -599,7 +603,9 @@ int SaveState() {
     /* fix the filename to %s.st%u format */
 	filename = malloc(1024);
 
-    #ifdef HW_RVL
+    #if defined(__WARPOS__)
+        sprintf(filename, "%s%s.st%u", statespath, CdromId, savestates_slot);
+    #elif defined(HW_RVL)
         sprintf(filename, "%s%s%s.st%u",(saveStateDevice==SAVESTATEDEVICE_USB)?"usb:":"sd:",
                            statespath, CdromId, savestates_slot);
     #else
@@ -687,7 +693,9 @@ int LoadState() {
 
     /* fix the filename to %s.st%u format */
 	filename = malloc(1024);
-    #ifdef HW_RVL
+    #if defined(__WARPOS__)
+        sprintf(filename, "%s%s.st%u", statespath, CdromId, savestates_slot);
+    #elif defined(HW_RVL)
         sprintf(filename, "%s%s%s.st%u",(saveStateDevice==SAVESTATEDEVICE_USB)?"usb:":"sd:",
                            statespath, CdromId, savestates_slot);
     #else
@@ -838,7 +846,7 @@ int RecvPcsxInfo() {
 	NET_recvData(&Config.Cpu, sizeof(Config.Cpu), PSE_NET_BLOCKING);
 	if (tmp != Config.Cpu) {
 		psxCpu->Shutdown();
-#ifdef PSXREC
+#if defined(PSXREC) && !defined(__WARPOS__)
 		if (Config.Cpu)
 			 psxCpu = &psxInt;
 		else psxCpu = &psxLightrec;

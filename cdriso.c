@@ -32,8 +32,10 @@
 #include "deps/libchdr/include/libchdr/chd.h"
 #endif // USE_LIBCHDR
 
+#ifndef __WARPOS__
 #include <ogc/lwp.h>
 #include <ogc/mutex.h>
+#endif
 
 #include <sys/time.h>
 #include <unistd.h>

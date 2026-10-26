@@ -151,6 +151,60 @@ void wos_log_tick(void)
     }
 }
 
+/* ---- The program's drawer -------------------------------------------- */
+
+static BPTR s_progdir_lock;
+static BPTR s_old_dir;
+static int  s_in_progdir;
+
+void wos_enter_progdir(void)
+{
+    s_progdir_lock = Lock((STRPTR)"PROGDIR:", ACCESS_READ);
+    if (s_progdir_lock) {
+        s_old_dir = CurrentDir(s_progdir_lock);
+        s_in_progdir = 1;
+    }
+}
+
+void wos_leave_progdir(void)
+{
+    if (s_in_progdir) {
+        CurrentDir(s_old_dir);
+        UnLock(s_progdir_lock);
+        s_in_progdir = 0;
+    }
+}
+
+/* ---- The image requester -------------------------------------------- */
+
+int wos_request_image(char *buf, unsigned size)
+{
+    struct FileRequester *fr;
+    struct TagItem tags[5];
+    int ok = 0;
+
+    if (!AslBase)
+        return 0;
+    tags[0].ti_Tag = ASLFR_TitleText;     tags[0].ti_Data = (ULONG)"WiiStation: choose a PlayStation disc image";
+    tags[1].ti_Tag = ASLFR_DoPatterns;    tags[1].ti_Data = TRUE;
+    tags[2].ti_Tag = ASLFR_InitialPattern;
+    tags[2].ti_Data = (ULONG)"#?.(cue|bin|iso|img|chd|pbp|ccd|mds|toc|cbn|exe)";
+    tags[3].ti_Tag = ASLFR_RejectIcons;   tags[3].ti_Data = TRUE;
+    tags[4].ti_Tag = TAG_DONE;            tags[4].ti_Data = 0;
+
+    fr = (struct FileRequester *)AllocAslRequest(ASL_FileRequest, tags);
+    if (!fr)
+        return 0;
+    if (AslRequest(fr, NULL) && fr->fr_File && fr->fr_File[0]) {
+        strncpy(buf, (const char *)fr->fr_Drawer, size - 1);
+        buf[size - 1] = 0;
+        if (AddPart((STRPTR)buf, (STRPTR)fr->fr_File, size))
+            ok = 1;
+    }
+    FreeAslRequest(fr);
+    return ok;
+}
+
 /* ---- Libraries -------------------------------------------------------- */
 
 int wos_sys_init(void)

@@ -38,7 +38,9 @@
 #include <ctype.h>
 #include <zlib.h>
 
+#ifndef __WARPOS__
 #include <gccore.h>
+#endif
 extern char mcd1Written;
 extern char mcd2Written;
 
@@ -4613,7 +4615,7 @@ void psxBiosCheckExe(u32 t_addr, u32 t_size, int loading_state)
 
 void psxBiosCheckBranch(void)
 {
-#if 1
+#if !defined(__WARPOS__) /* unused, and needs Lightrec's scheduler */
 	// vsync HLE hack
 	static u32 cycles_prev, v0_prev;
 	u32 cycles_passed, waste_cycles;

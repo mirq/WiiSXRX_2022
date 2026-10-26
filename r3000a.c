@@ -39,7 +39,14 @@ int psxInit() {
 	if (Config.Cpu == DYNACORE_INTERPRETER) {
 		psxCpu = &psxInt;
 	}
-#if defined(__x86_64__) || defined(__i386__) || defined(__sh__) || defined(__ppc__) || defined(HW_RVL) || defined(HW_DOL)
+#if defined(__WARPOS__)
+#ifdef WOS_HAVE_DYNAREC
+	if (Config.Cpu != DYNACORE_INTERPRETER)
+	{
+		psxCpu = &psxRec;
+	}
+#endif
+#elif defined(__x86_64__) || defined(__i386__) || defined(__sh__) || defined(__ppc__) || defined(HW_RVL) || defined(HW_DOL)
 	if (Config.Cpu == DYNACORE_DYNAREC)
 	{
 		psxCpu = &psxLightrec;

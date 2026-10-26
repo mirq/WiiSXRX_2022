@@ -22,7 +22,7 @@
 
 #include "psxcommon.h"
 
-#if defined(HW_RVL) || defined(HW_DOL) || defined(BIG_ENDIAN)
+#if defined(HW_RVL) || defined(HW_DOL) || defined(BIG_ENDIAN) || defined(PSX_HOST_BIG_ENDIAN_PPC)
 
 #define SWAP16(v) __builtin_bswap16(v)
 #define SWAP32(v) __builtin_bswap32(v)

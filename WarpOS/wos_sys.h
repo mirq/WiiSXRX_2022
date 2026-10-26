@@ -32,6 +32,14 @@ void     wos_log_tick(void);          /* once a frame: writes when 2 s have pass
 void    *wos_alloc_ppc(uint32_t size);
 void     wos_free_ppc(void *p);
 
+/* Run from the program's own drawer: Lock("PROGDIR:") + CurrentDir, never
+ * newlib chdir (it unlocks the Shell's own lock). */
+void     wos_enter_progdir(void);
+void     wos_leave_progdir(void);
+
+/* An ASL file requester for a disc image; 1 with the path in buf. */
+int      wos_request_image(char *buf, unsigned size);
+
 /* A ENV: variable as an int, or def when unset. */
 int      wos_env_int(const char *name, int def);
 

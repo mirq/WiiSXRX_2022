@@ -41,7 +41,9 @@
 /* Ryan TODO: I'd rather not use GLib in here */
 
 #include <malloc.h>
+#ifndef __WARPOS__
 #include <gccore.h>
+#endif
 #include <stdlib.h>
 #include "psxmem.h"
 #include "r3000a.h"
@@ -53,10 +55,13 @@
 #include "Gamecube/wiiSXconfig.h"
 #include "Gamecube/DEBUG.h"
 
+#ifndef __WARPOS__
 #include "Gamecube/vm/vm.h"
+#endif
 
 bool lightrec_mmap_inited = false;
 
+#ifndef __WARPOS__
 #include <ogc/machine/processor.h>
 #include <ogc/cast.h>
 #include <ogc/cache.h>
@@ -68,6 +73,7 @@ void CAST_SetGQR(s32 GQR, u32 typeL, s32 scaleL)
 	register u32 val = (((scaleL) << 24) | ((typeL) << 16) | ((scaleL) << 8) | (typeL));
 	__set_gqr(GQR,val);
 }
+#endif
 
 extern void SysMessage(char *fmt, ...);
 
@@ -86,8 +92,10 @@ s8 *psxH = NULL; // Scratch Pad (1K) & Hardware Registers (8K)
 u8* psxMemWLUT[0x10000] __attribute__((aligned(32)));
 u8* psxMemRLUT[0x10000] __attribute__((aligned(32)));
 
+#ifndef __WARPOS__
 #define BUF_SIZE 0x400000 // 4 MiB code buffer for Lightrec and DYNAREC
 static char *recBuffer = (char*)LIGHTREC_BUF_LO;
+#endif
 
 int psxMemInit() {
 	int i;
@@ -95,6 +103,7 @@ int psxMemInit() {
 	psxP = &psxM[0x200000];
 	psxH = &psxM[0x210000];
 
+#ifndef __WARPOS__
     if (Config.Cpu == DYNACORE_DYNAREC) // Lightrec
 	{
 		if (!lightrec_mmap_inited)
@@ -120,6 +129,7 @@ int psxMemInit() {
 			lightrec_mmap_inited = true;
         }
 	}
+#endif
 
 	memset(psxMemRLUT, 0, 0x10000 * sizeof(void*));
 	memset(psxMemWLUT, 0, 0x10000 * sizeof(void*));
@@ -149,6 +159,7 @@ int psxMemInit() {
 	psxMemWLUT[0x1f00] = 0;
 	psxMemWLUT[0x1f80] = (u8 *)psxH;
 
+#ifndef __WARPOS__
     // enable HID2(PSE)
     u32 hid2 = mfhid2();
     mthid2(hid2 | 0x20000000);
@@ -159,6 +170,7 @@ int psxMemInit() {
     CAST_SetGQR(GQR5, GQR_TYPE_S16, 12); // set GQR4 load s16 => float >> 12
     CAST_SetGQR(GQR6, GQR_TYPE_S16, 8); // set GQR4 load s16 => float >> 8
     //CAST_SetGQR(GQR7, GQR_TYPE_S16, 0);
+#endif
 
     //DCEnable();
     //ICEnable();

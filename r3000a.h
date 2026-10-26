@@ -76,14 +76,19 @@ typedef struct {
 extern R3000Acpu *psxCpu;
 extern R3000Acpu psxInt;
 extern R3000Acpu psxIntDbg;
-#if defined(__x86_64__) || defined(__i386__) || defined(__sh__) || defined(__ppc__) || defined(HW_RVL) || defined(HW_DOL)
+#if defined(__WARPOS__)
+#ifdef WOS_HAVE_DYNAREC
+extern R3000Acpu psxRec;    /* the ppc/ dynarec; no Lightrec on WarpOS */
+#define PSXREC
+#endif
+#elif defined(__x86_64__) || defined(__i386__) || defined(__sh__) || defined(__ppc__) || defined(HW_RVL) || defined(HW_DOL)
 extern R3000Acpu psxRec;
 extern R3000Acpu psxLightrec;
 #define PSXREC
 #endif
 
 typedef union {
-#if defined(HW_RVL) || defined(HW_DOL)
+#if defined(HW_RVL) || defined(HW_DOL) || defined(PSX_HOST_BIG_ENDIAN_PPC)
 	struct { u8 h3, h2, h, l; } b;
 	struct { s8 h3, h2, h, l; } sb;
 	struct { u16 h, l; } w;
@@ -350,7 +355,7 @@ void new_dyna_freeze(void *f, int mode);
 } while (0)
 
 
-#if defined(HW_RVL) || defined(HW_DOL) || defined(BIG_ENDIAN)
+#if defined(HW_RVL) || defined(HW_DOL) || defined(BIG_ENDIAN) || defined(PSX_HOST_BIG_ENDIAN_PPC)
 
 #define _i32(x) *(s32 *)&x
 #define _u32(x) x
