@@ -47,7 +47,20 @@ static int screen_w, screen_h;
 
 // The GX path's hooks: the hardware GPU and the menu call these on the Wii.
 void gc_vout_render(void)      { wos_video_swap(); }
-int  gx_vout_render(short canSwapFrameBuf) { (void)canSwapFrameBuf; wos_video_swap(); return 1; }
+/* GlesGpu's present. On the Wii the EFB keeps its pixels after the display
+ * copy unless asked to clear; MiniGL's GPU-side present copy
+ * (MGLPPC_CPPRESENT=1) keeps the back buffer the same way. */
+int  gx_vout_render(short canSwapFrameBuf)
+{
+	wos_video_swap();
+#ifdef WOS_HAVE_GLES
+	if (canSwapFrameBuf) {
+		extern void wosgl_ClearFramebuffer(void);
+		wosgl_ClearFramebuffer();
+	}
+#endif
+	return 1;
+}
 void gx_vout_wait_idle(void)   {}
 void gc_vout_disabled(void)    { wos_video_present_blank(); }
 void showFpsAndDebugInfo(void) {}

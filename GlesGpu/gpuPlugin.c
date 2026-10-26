@@ -34,7 +34,11 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#ifdef __WARPOS__
+#include "../WarpOS/wos_gx.h"
+#else
 #include <gccore.h>
+#endif
 
 #include "gpuExternals.h"
 #include "gpuPlugin.h"
@@ -45,7 +49,9 @@
 #include "../gpu.h" // meh
 #include "../gpulib/gpu.h"
 #include "../SoftGPU/oldGpuFps.h"
+#ifndef __WARPOS__
 #include "../mem2_manager.h"
+#endif
 #include "../Gamecube/wiiSXconfig.h"
 
 //#include "NoPic.h"
@@ -54,7 +60,9 @@
 
 #include "../database.h"
 #include "../Gamecube/DEBUG.h"
+#ifndef __WARPOS__
 #include "../Gamecube/MEM2.h"
+#endif
 
 static short DrawSemiTrans=FALSE;
 static short ly0,lx0,ly1,lx1,ly2,lx2,ly3,lx3;        // global psx vertex coords
@@ -2292,6 +2300,14 @@ long GL_GPUopen()
 
  iResX = 640;
  iResY = 480;
+#ifdef __WARPOS__
+ /* the EFB is the MiniGL context */
+ {
+  extern int wos_video_width(void), wos_video_height(void);
+  iResX = wos_video_width();
+  iResY = wos_video_height();
+ }
+#endif
  rRatioRect.left   = 0;
 // if (screenMode != SCREENMODE_4x3)
 // {

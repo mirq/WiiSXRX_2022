@@ -33,8 +33,12 @@
 extern "C" {
 #endif
 
+#ifdef __WARPOS__
+#include "../WarpOS/wos_gl.h"
+#else
 #include "../deps/opengx/GL/gl.h"
 #include "../deps/opengx/GL/glext.h"
+#endif
 #include "../gpulib/stdafx.h"
 
 #ifndef GL_BGRA_EXT
