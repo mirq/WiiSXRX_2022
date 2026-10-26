@@ -79,7 +79,7 @@ SRCS := $(PLATFORM_SRCS) $(CORE_SRCS) $(GC_SRCS) $(GPU_SRCS) $(SPU_SRCS) $(CHDR_
 # take them off, so a forgotten <SDL.h> fails instead of compiling against it.
 WOS_CPPFLAGS_NOSDL := $(subst -isystem $(WOS_SDK_ROOT)/include/sdl,,$(WOS_CPPFLAGS))
 
-# -fsigned-char: char is UNSIGNED on PPC; the emulator assumes signed.
+# -funsigned-char: as on the Wii (PPC's char is unsigned); the code is tested that way.
 # -fno-common: the ET_REL check refuses COMMON symbols (GCC 8 defaults to them).
 # -msdata=none -G0: no small-data relocations, which the converter cannot translate.
 # -Uamiga -Uamigaos: the compiler predefines these outside the reserved namespace.
@@ -88,7 +88,7 @@ DEFINES := -D__WARPOS__ -DPSX_HOST_BIG_ENDIAN_PPC -D__BIG_ENDIAN__ \
            -DUSE_LIBCHDR -DHAVE_LROUND -DPACKAGE_VERSION=\"1.3.2\" \
            -DWOS_BUILD_STAMP=\"$(BUILD_STAMP)\" -DWOS_HAVE_DYNAREC -DWOS_HAVE_GLES
 
-CFLAGS_COMMON := $(WOS_ARCH_CFLAGS) -O2 -g -fno-strict-aliasing -fsigned-char \
+CFLAGS_COMMON := $(WOS_ARCH_CFLAGS) -O2 -g -fno-strict-aliasing -funsigned-char \
           -fno-common -msdata=none -G0 -MMD -MP \
           $(DEFINES) $(WOS_CPPFLAGS_NOSDL) -Uamiga -Uamigaos \
           -IWarpOS -I. -IWarpOS/compat -I$(MGL_DIR)/include \
