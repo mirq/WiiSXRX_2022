@@ -16,7 +16,9 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#ifndef __WARPOS__
 #include <gccore.h>
+#endif
 #include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,8 +35,12 @@
 #include "../r3000a.h"
 #include "../psxhle.h"
 #include "../Gamecube/DEBUG.h"
+#ifdef __WARPOS__
+#include "../WarpOS/wos_sys.h"
+#else
 #include "../Gamecube/MEM2.h"
 #include <ogc/lwp_heap.h>
+#endif
 
 //#define printFunctionLog() { \
 //    sprintf(txtbuffer, "recFunction %s\n", __FUNCTION__); \
@@ -45,11 +51,19 @@
 /* variable declarations */
 static u32 psxRecLUT[0x010000];
 //static char recMem[RECMEM_SIZE] __attribute__((aligned(32)));	/* the recompiled blocks will be here */
+#ifdef __WARPOS__
+/* The PPC's own memory, allocated once at recInit: on a Sonnet the PPC can
+ * execute only from there. */
+static char *recMem;	/* the recompiled blocks will be here */
+static char* recRAM;	/* and the ptr to the blocks here */
+static char* recROM;
+#else
 static char *recMem = RECMEM2_LO;	/* the recompiled blocks will be here */
 //static char recRAM[0x200000] __attribute__((aligned(32)));	/* and the ptr to the blocks here */
 //static char recROM[0x080000] __attribute__((aligned(32)));	/* and here */
 static char* recRAM = (char*)LIGHTREC_BUF_LO;
 static char* recROM = (char*)LIGHTREC_BUF_LO + 0x200000;
+#endif
 
 static u32 pc;			/* recompiler pc */
 static u32 pcold;		/* recompiler oldpc */
@@ -1115,6 +1129,18 @@ static void recMVMVA2() {
 
 static int allocMem() {
 	int i;
+
+#ifdef __WARPOS__
+	if (!recMem)
+		recMem = (char *)wos_alloc_ppc(RECMEM_SIZE);
+	if (!recRAM)
+		recRAM = (char *)wos_alloc_ppc(0x200000 + 0x080000);
+	if (!recMem || !recRAM) {
+		wos_log("dynarec: no memory for the code buffer (%d KB)", (RECMEM_SIZE + 0x280000) >> 10);
+		return -1;
+	}
+	recROM = recRAM + 0x200000;
+#endif
 
 	for (i=0; i<0x80; i++) psxRecLUT[i + 0x0000] = (u32)&recRAM[(i & 0x1f) << 16];
 	memcpy(psxRecLUT + 0x8000, psxRecLUT, 0x80 * 4);
@@ -3559,8 +3585,12 @@ __inline static void recRecompile() {
   }
 
   u32 endRange = (u32)(u8*)ppcPtr-(u32)(u8*)ptr;
+#ifdef __WARPOS__
+  wos_cache_flush_code((void*)ptr, endRange);
+#else
   DCFlushRange((void*)ptr, endRange);
   ICInvalidateRange((void*)ptr, endRange);
+#endif
 
 #ifdef TAG_CODE
 	sprintf((char *)ppcPtr, "PC=%08x", pcold);  //causes misalignment

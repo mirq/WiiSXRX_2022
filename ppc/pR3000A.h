@@ -19,7 +19,9 @@
 #ifndef _pR3000A_H_
 #define _pR3000A_H_
 
+#ifndef __WARPOS__
 #include <gccore.h>
+#endif
 #include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -34,10 +36,14 @@
 #include "../r3000a.h"
 #include "../psxhle.h"
 #include "../Gamecube/DEBUG.h"
+#ifndef __WARPOS__
 #include "../Gamecube/MEM2.h"
+#endif
 
 /* defines */
-#ifdef HW_DOL
+#if defined(__WARPOS__)
+#define RECMEM_SIZE		(10*1024*1024)  // AllocVecPPC'd at recInit
+#elif defined(HW_DOL)
 #define RECMEM_SIZE		(6*1024*1024)
 #elif HW_RVL
 #define RECMEM_SIZE		RECMEM2_SIZE  // mem2

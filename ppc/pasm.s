@@ -40,11 +40,12 @@
 .align  4
 .globl  recRun
 recRun:
-	# prologue code
+	# prologue code: the frame first, then the registers into it -- nothing
+	# is ever stored below the stack pointer (no red zone on WarpOS)
 	mflr	r0            # move from LR to r0
-	stmw	r14, -72(r1)  # store non-volatiles (-72 == -(32-14)*4)
-	stw		r0, 4(r1)     # store old LR
 	stwu	r1, -80(r1)   # increment and store sp (-80 == -((32-14)*4+8))
+	stw		r0, 84(r1)    # store old LR in the caller's LR save word
+	stmw	r14, 8(r1)    # store non-volatiles (8 == 80-(32-14)*4)
 	
 	# execute code
 	mtctr	r3            # move func ptr to ctr
@@ -59,9 +60,9 @@ recRun:
 returnPC:
 	# end code
 	lwz		r0, 84(r1)    # re-load LR (84 == (32-14)*4+8+4)
+	lmw		r14, 8(r1)    # reload non-volatiles while the frame is still ours
 	addi	r1, r1, 80    # increment SP (80 == (32-14)*4+8)
 	mtlr	r0            # set LR
-	lmw		r14, -72(r1)  # reload non-volatiles (-72 == -((32-14)*4))
 	blr                 # return
 
 #// Memory functions that only works with a linear memory
