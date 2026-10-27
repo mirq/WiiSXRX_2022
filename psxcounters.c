@@ -530,6 +530,9 @@ void psxRcntWtarget( u32 index, u32 value )
 
 u32 psxRcntRcount( u32 index )
 {
+#ifdef __WARPOS__
+    { extern unsigned int wos_hw_reads; wos_hw_reads++; }
+#endif
     u32 count;
 
     if (index == 0)
@@ -567,6 +570,9 @@ u32 psxRcntRcount( u32 index )
 
 u32 psxRcntRmode( u32 index )
 {
+#ifdef __WARPOS__
+    { extern unsigned int wos_hw_reads; wos_hw_reads++; }
+#endif
     u16 mode;
 
     mode = rcnts[index].mode;
@@ -579,6 +585,9 @@ u32 psxRcntRmode( u32 index )
 
 u32 psxRcntRtarget( u32 index )
 {
+#ifdef __WARPOS__
+    { extern unsigned int wos_hw_reads; wos_hw_reads++; }
+#endif
     //verboseLog( 2, "[RCNT %i] rtarget: %x\n", index, rcnts[index].target );
 
     return rcnts[index].target;

@@ -192,9 +192,13 @@ unsigned wos_input_poll(void *window)
             if (s_keylatch[i])
                 s_keylatch[i]--;
     }
-    if (frame % 1500 == 0)
-        wos_log("[input] drains: %u on mail seen, %u by timer (%u of them with mail)",
-                s_peek_drains, s_timer_drains, s_timer_mail);
+    if (frame % 300 == 0) {
+        extern unsigned int wos_pad_polls[2], wos_pad_pressed[2], wos_pad_last[2];
+        wos_log("[input] drains: %u on mail seen, %u by timer (%u of them with mail); pad 1 polled %u, %u with buttons (last %04x)",
+                s_peek_drains, s_timer_drains, s_timer_mail,
+                wos_pad_polls[0], wos_pad_pressed[0], wos_pad_last[0]);
+        wos_pad_polls[0] = wos_pad_pressed[0] = 0;
+    }
     if (win && win->UserPort) {
         struct IntuiMessage *m;
         int peek = port_has_message(win->UserPort), got = 0;

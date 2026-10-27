@@ -408,6 +408,14 @@ void SysUpdate(void)
     }
     if (s_auto_frames && framesdone >= s_auto_frames)
         act |= WOS_ACT_QUIT;
+    /* SetEnv WSX_LOADSTATE n loads the save state at frame n (benchmarks). */
+    {
+        static int load_at = -1;
+        if (load_at < 0)
+            load_at = wos_env_int("WSX_LOADSTATE", 0);
+        if (load_at > 0 && framesdone == load_at)
+            act |= WOS_ACT_LOADSTATE;
+    }
     /* SetEnv WSX_QUIT 1 quits through the normal path (memory cards saved,
      * MiniGL closed): what a remote session uses instead of Break. */
     if (framesdone % 50 == 0 && wos_env_take("WSX_QUIT"))
@@ -523,9 +531,9 @@ static void run(void)
         if (s_pending_actions & WOS_ACT_QUIT)
             break;
         if (s_pending_actions & WOS_ACT_SAVESTATE)
-            wos_log("save state: %s", SaveState() == 0 ? "ok" : "failed");
+            wos_log("save state: %s", SaveState() == 1 ? "ok" : "failed");
         if (s_pending_actions & WOS_ACT_LOADSTATE)
-            wos_log("load state: %s", LoadState() == 0 ? "ok" : "failed");
+            wos_log("load state: %s", LoadState() == 1 ? "ok" : "failed");
     }
 }
 
@@ -579,6 +587,13 @@ int main(int argc, char **argv)
     wos_files_install(SAVE_DIR, s_bios_dir);
     bios_init();
     wos_input_init();
+    {
+        extern int wos_nogate, wos_noidle;
+        wos_nogate = wos_env_int("WSX_NOGATE", 0);
+        wos_noidle = wos_env_int("WSX_NOIDLE", 0);
+        if (wos_nogate || wos_noidle)
+            wos_log("event gate %s, idle skip %s", wos_nogate ? "off" : "on", wos_noidle ? "off" : "on");
+    }
     if (wos_video_open() != 0) {
         wos_log("cannot open the display");
         rc = 20;

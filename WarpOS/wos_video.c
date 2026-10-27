@@ -17,6 +17,8 @@
 #include "wos_video.h"
 #include "wos_sys.h"
 #include "wos_amiga.h"
+#include "../psxcommon.h"
+#include "wos_idle.h"
 
 #include <proto/minigl.h>
 
@@ -277,9 +279,14 @@ void wos_video_frame_stats(void)
                 st[WOS_PROF_MDEC],
                 (unsigned long)(span / s_stat_frames) - st[WOS_PROF_GPU] - st[WOS_PROF_RCNT]
                     - st[WOS_PROF_IRQ] - st[WOS_PROF_MDEC] - st[WOS_PROF_GP1]);
-        wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us",
-                st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xff),
-                st[WOS_PROF_TEXCONV], st[WOS_PROF_TEXUP]);
+        {
+            extern unsigned int wos_tex_subs, wos_tex_texels;
+            wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us, %lu partial uploads of %lu texels a frame",
+                    st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xff),
+                    st[WOS_PROF_TEXCONV], st[WOS_PROF_TEXUP],
+                    (unsigned long)(wos_tex_subs / s_stat_frames), (unsigned long)(wos_tex_texels / s_stat_frames));
+            wos_tex_subs = wos_tex_texels = 0;
+        }
         wos_log("[prof] UploadScreen %lu us, %lu textures made, %lu cd fills; SysUpdate %lu us (input %lu)",
                 st[WOS_PROF_UPSCREEN], (unsigned long)(wos_prof_reads >> 16),
                 (unsigned long)((wos_prof_reads >> 8) & 0xff),
@@ -294,8 +301,14 @@ void wos_video_frame_stats(void)
             wos_bt_calls = wos_bt_full = wos_xa_sectors = 0;
             {
                 extern unsigned int wos_idle_found, wos_idle_skips;
-                wos_log("[prof] idle loops found %u, skips per frame %lu",
-                        wos_idle_found, (unsigned long)(wos_idle_skips / s_stat_frames));
+
+                wos_log("[prof] idle loops found %u, skips per frame %lu; now %08lx<-%08lx %lu, %08lx<-%08lx %lu, %08lx<-%08lx %lu, %08lx<-%08lx %lu",
+                        wos_idle_found, (unsigned long)(wos_idle_skips / s_stat_frames),
+                        (unsigned long)wos_idle[0].pc, (unsigned long)wos_idle[0].pred, (unsigned long)wos_idle[0].skips,
+                        (unsigned long)wos_idle[1].pc, (unsigned long)wos_idle[1].pred, (unsigned long)wos_idle[1].skips,
+                        (unsigned long)wos_idle[2].pc, (unsigned long)wos_idle[2].pred, (unsigned long)wos_idle[2].skips,
+                        (unsigned long)wos_idle[3].pc, (unsigned long)wos_idle[3].pred, (unsigned long)wos_idle[3].skips);
+                { int k; for (k = 0; k < 4; k++) wos_idle[k].skips = 0; }
                 wos_idle_skips = 0;
             }
             {

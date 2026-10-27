@@ -10,6 +10,8 @@ typedef struct {
     u32 pc;     /* the loop is entered here... */
     u32 pred;   /* ...from this block, by its backward branch at br */
     u32 br, op;
+    u32 skips;
+    u32 regs[34];   /* r0..r31, hi, lo at the last arrival */
 } WosIdle;
 
 extern WosIdle wos_idle[WOS_IDLE_SLOTS];

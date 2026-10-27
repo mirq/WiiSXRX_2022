@@ -184,6 +184,7 @@ static GLint wrap_conv(GLint p)
 }
 
 /* A MiniGL texture of w x h, its texels from bgra (or black). */
+unsigned int wos_tex_subs, wos_tex_texels;    /* partial uploads, for the log */
 static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra, int fmt);
 static GLuint make_plane(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra)
 {
@@ -208,8 +209,14 @@ static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLuby
     }
     if (fmt == FMT_565)
         WOS_PROF(WOS_PROF_TEXUP, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, bgra));
-    else
+    else {
         WOS_PROF(WOS_PROF_TEXUP, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, bgra));
+        /* One full-image subimage starts MiniGL's retained shadow; without
+         * it GlesGpu's partial uploads of the texture pages all took the
+         * shared path, where the 68k copies the whole image. */
+        if (!(w & (w - 1)) && !(h & (h - 1)))
+            WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, bgra));
+    }
     wos_prof_reads += 0x10000;      /* texture creations, in the high half */
     return name;
 }
@@ -493,6 +500,8 @@ int wosgl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
                             GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, s_conv_main));
             return TEX_TYPE_2;
         }
+        wos_tex_subs++;
+        wos_tex_texels += (unsigned)(cw * ch);
         WOS_PROF(WOS_PROF_TEXCONV, tt = split_texels((const GLubyte *)data, width, cw, ch, 0));
         glBindTexture(GL_TEXTURE_2D, t->main);
         WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,

@@ -161,6 +161,7 @@ extern u32 psxNextCounter, psxNextsCounter;
 #ifdef __WARPOS__
 u32 wos_next_event;
 u32 wos_bt_calls, wos_bt_full;
+int wos_nogate, wos_noidle;    /* SetEnv WSX_NOGATE / WSX_NOIDLE 1: off, to compare */
 
 /* The interrupts psxBranchTest below services; the others are set in
  * psxRegs.interrupt but never cleared. */
@@ -199,13 +200,21 @@ void psxBranchTest() {
 		wos_prev_pc = pc;
 		if (!(++wos_bt_calls & 15))
 			wos_pc_sample(pc, wos_tb_lo());
-		if ((s32)(psxRegs.cycle - wos_next_event) < 0) {
+		if (!wos_nogate && (s32)(psxRegs.cycle - wos_next_event) < 0) {
 			int i;
-			for (i = 0; i < WOS_IDLE_SLOTS; i++) {
+			for (i = 0; i < WOS_IDLE_SLOTS && !wos_noidle; i++) {
 				if (wos_idle[i].pc == pc && wos_idle[i].pred == prev) {
+					/* Skipped only when the last round changed no
+					 * register: then the next is the same until an
+					 * event changes memory. A countdown never is. */
+					if (memcmp(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs))) {
+						memcpy(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs));
+						break;
+					}
 					if (wos_idle_still(&wos_idle[i])) {
 						psxRegs.cycle = wos_next_event;
 						wos_idle_skips++;
+						wos_idle[i].skips++;
 						goto wos_full;
 					}
 				}

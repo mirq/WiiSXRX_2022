@@ -12,7 +12,9 @@
  * they repeat with a period of 8 or less, each block of the cycle (from its
  * first instruction to the branch that ends it, and its delay slot) is
  * checked. The loop is entered at a backward branch inside it; it is skipped
- * only when that branch is the one just taken.
+ * only when that branch is the one just taken. A loop that reads hardware
+ * (GPU status, a timer) during the trace is left alone: that state moves
+ * with time, not at events, and skipping to the next event costs frames.
  */
 #include "../psxcommon.h"
 #include "../r3000a.h"
@@ -27,6 +29,8 @@ WosIdle wos_idle[WOS_IDLE_SLOTS];
 static int s_slot;
 static u32 s_trace[TRACE];
 static int s_trace_n;
+static unsigned int s_trace_hw;
+extern unsigned int wos_hw_reads;
 unsigned int wos_idle_found, wos_idle_skips;
 
 static int fetch(u32 a, u32 *op)
@@ -143,6 +147,7 @@ static void analyse(void)
             w->pred = s_trace[prev];
             w->br = br[prev];
             w->op = op;
+            w->skips = 0;
             wos_idle_found++;
             return;
         }
@@ -153,7 +158,9 @@ void wos_idle_trace(u32 pc)
 {
     if (s_trace_n < TRACE) {
         s_trace[s_trace_n++] = pc;
-        if (s_trace_n == TRACE)
+        /* A loop that reads hardware waits on the GPU, a timer or the CD:
+         * those move with time, not at events, so it is not skipped. */
+        if (s_trace_n == TRACE && wos_hw_reads == s_trace_hw)
             analyse();
     }
 }
@@ -161,6 +168,7 @@ void wos_idle_trace(u32 pc)
 void wos_idle_start_trace(void)
 {
     s_trace_n = 0;
+    s_trace_hw = wos_hw_reads;
 }
 
 int wos_idle_tracing(void)

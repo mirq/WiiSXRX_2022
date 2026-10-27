@@ -2170,6 +2170,16 @@ static void preMemWrite(int size)
 	//FlushAllHWReg();
 }
 
+/* GPU reads, counted: a loop that reads hardware is not idle (WarpOS/wos_idle.c). */
+#ifdef __WARPOS__
+extern unsigned int wos_hw_reads;
+static u32 wos_gpu_read_status(void) { wos_hw_reads++; return gpuPtr->readStatus(); }
+static u32 wos_gpu_read_data(void) { wos_hw_reads++; return gpuPtr->readData(); }
+#else
+#define wos_gpu_read_status gpuPtr->readStatus
+#define wos_gpu_read_data gpuPtr->readData
+#endif
+
 //REC_FUNC(LB);
 static void recLB() {
 // Rt = mem[Rs + Im] (signed)
@@ -2463,7 +2473,7 @@ static void recLW() {
 
 					DisposeHWReg(iRegs[_Rt_].reg);
 					InvalidateCPURegs();
-					CALLFunc((u32)gpuPtr->readData);
+					CALLFunc((u32)wos_gpu_read_data);
 
 					SetDstCPUReg(3);
 					PutHWReg32(_Rt_);
@@ -2474,7 +2484,7 @@ static void recLW() {
 
 					DisposeHWReg(iRegs[_Rt_].reg);
 					InvalidateCPURegs();
-					CALLFunc((u32)gpuPtr->readStatus);
+					CALLFunc((u32)wos_gpu_read_status);
 
 					SetDstCPUReg(3);
 					PutHWReg32(_Rt_);

@@ -29,6 +29,7 @@ PadDataS lastport2;
 long     PadFlags = 0;
 
 static int pad_initialized = 0;
+unsigned int wos_pad_polls[2], wos_pad_pressed[2], wos_pad_last[2];
 
 static struct
 {
@@ -82,6 +83,11 @@ static void UpdateState (const int pad)
 
 	wos_input_read_pad(pad, &st);
 	global.isConnected[pad] = st.connected;
+	wos_pad_polls[pad]++;
+	if (st.buttons != 0xffff) {
+		wos_pad_pressed[pad]++;
+		wos_pad_last[pad] = (u16)~st.buttons;
+	}
 
 	/* buttons: bit 0..7 the first data byte, 8..15 the second, active low;
 	 * the poll sends padStat high byte first. */

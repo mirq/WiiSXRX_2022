@@ -25,6 +25,9 @@
 #include "WarpOS/wos_sys.h"
 #endif
 #include "psxhw.h"
+#ifdef __WARPOS__
+unsigned int wos_hw_reads; /* a loop that reads hardware is not idle (WarpOS/wos_idle.c) */
+#endif
 #include "mdec.h"
 #include "cdrom.h"
 #include "gpu.h"
@@ -138,6 +141,9 @@ u32 psxHwReadGpuSRbusyHack(void)
 }
 
 u8 psxHwRead8(u32 add) {
+#ifdef __WARPOS__
+	wos_hw_reads++;
+#endif
     u8 hard;
 
     switch (add & 0xffff) {
@@ -191,6 +197,9 @@ u8 psxHwRead8(u32 add) {
 }
 
 u16 psxHwRead16(u32 add) {
+#ifdef __WARPOS__
+	wos_hw_reads++;
+#endif
     unsigned short hard;
 
     switch (add & 0xffff) {
@@ -241,6 +250,9 @@ u16 psxHwRead16(u32 add) {
 }
 
 u32 psxHwRead32(u32 add) {
+#ifdef __WARPOS__
+	wos_hw_reads++;
+#endif
     u32 hard;
 
     switch (add & 0xffff) {
