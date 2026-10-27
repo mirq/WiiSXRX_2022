@@ -15,6 +15,9 @@
  *                                                                         *
  ***************************************************************************/
 
+#ifdef __WARPOS__
+#include "../WarpOS/wos_sys.h"
+#endif
 #include "stdafx.h"
 
 #define _IN_REGISTERS
@@ -53,6 +56,9 @@ void CALLBACK DF_SPUwriteRegister(unsigned long reg, unsigned short val,
  int r = reg & 0xffe;
  int rofs = (r - 0xc00) >> 1;
  int changed = spu.regArea[rofs] != val;
+#ifdef __WARPOS__
+ WOS_CRUMB2(82, spu.spuAddr);
+#endif
  spu.regArea[rofs] = val;
 
  if (!changed && (ignore_dupe[rofs >> 5] & (1 << (rofs & 0x1f))))

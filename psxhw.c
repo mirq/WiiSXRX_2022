@@ -21,6 +21,9 @@
 * Functions for PSX hardware control.
 */
 
+#ifdef __WARPOS__
+#include "WarpOS/wos_sys.h"
+#endif
 #include "psxhw.h"
 #include "mdec.h"
 #include "cdrom.h"
@@ -362,7 +365,13 @@ void psxHwWrite16(u32 add, u32 value) {
 
         default:
             if (0x1f801c00 <= add && add < 0x1f802000) {
+#ifdef __WARPOS__
+                WOS_CRUMB2(80, add);
+#endif
                 SPU_writeRegister(add, value, psxRegs.cycle);
+#ifdef __WARPOS__
+                WOS_CRUMB(81);
+#endif
                 return;
             }
     }

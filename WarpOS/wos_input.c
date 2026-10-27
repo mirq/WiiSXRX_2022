@@ -2,9 +2,10 @@
  * wos_input.c -- the PSX pads from the Amiga's keyboard and joystick ports.
  *
  * Keyboard: IDCMP_RAWKEY from the display's window, raw Amiga scancodes with
- * bit 7 (IECODE_UP_PREFIX) on release. The port is drained only when its
- * signal is set, so a quiet frame costs one SetSignal(0, 0), which also brings
- * CTRL-C. Joysticks and CD32 pads: lowlevel.library ReadJoyPort. Each read is
+ * bit 7 (IECODE_UP_PREFIX) on release. The port is drained every frame, as
+ * quake3amiga does: its signal bit belongs to the task that opened the
+ * window, which is MiniGL's 68k host, so SetSignal here never shows it.
+ * CTRL-C still comes as a signal. Joysticks and CD32 pads: lowlevel.library ReadJoyPort. Each read is
  * a trip to the 68k, so a port is read every frame only while something
  * answers in it; an empty one is looked at again about once a second.
  *
@@ -150,7 +151,6 @@ static void read_port(ULONG port, int slot)
 unsigned wos_input_poll(void *window)
 {
     struct Window *win = (struct Window *)window;
-    ULONG winsig = (win && win->UserPort) ? (1UL << win->UserPort->mp_SigBit) : 0;
     ULONG sigs = SetSignal(0, 0);
     unsigned act = 0;
 
@@ -158,9 +158,8 @@ unsigned wos_input_poll(void *window)
         SetSignal(0, SIGBREAKF_CTRL_C);
         act |= WOS_ACT_QUIT;
     }
-    if (sigs & winsig) {
+    if (win && win->UserPort) {
         struct IntuiMessage *m;
-        SetSignal(0, winsig);
         while ((m = (struct IntuiMessage *)GetMsg(win->UserPort)) != NULL) {
             ULONG cls  = m->Class;
             UWORD code = m->Code;

@@ -32,6 +32,9 @@
 #include "deps/libchdr/include/libchdr/chd.h"
 #endif // USE_LIBCHDR
 
+#ifdef __WARPOS__
+#include "WarpOS/wos_sys.h"
+#endif
 #ifndef __WARPOS__
 #include <ogc/lwp.h>
 #include <ogc/mutex.h>
@@ -1623,7 +1626,13 @@ static long CALLBACK ISOreadTrack(unsigned char *time) {
 	if (pregapOffset && sector >= pregapOffset)
 		sector -= 2 * 75;
 
+#ifdef __WARPOS__
+	WOS_CRUMB2(40, sector);
+#endif
 	ret = cdimg_read_func(cdHandle, 0, cdbuffer, sector);
+#ifdef __WARPOS__
+	WOS_CRUMB(41);
+#endif
 	if (ret <= 0)
 		return 0;
 

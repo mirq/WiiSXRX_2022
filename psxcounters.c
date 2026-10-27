@@ -22,6 +22,9 @@
  */
 
 #include "psxcounters.h"
+#ifdef __WARPOS__
+#include "WarpOS/wos_sys.h"
+#endif
 #include "gpu.h"
 #include "Gamecube/DEBUG.h"
 #include "Gamecube/wiiSXconfig.h"
@@ -404,7 +407,13 @@ void psxRcntUpdate()
             //GPU_vBlank( 1, 0 );
             setIrq( 0x01 );
 
+#ifdef __WARPOS__
+            WOS_CRUMB(72);
+#endif
             gpuPtr->updateLace();
+#ifdef __WARPOS__
+            WOS_CRUMB(73);
+#endif
             SysUpdate();
 
             if (lightGun == LIGHTGUN_JUST){
@@ -461,7 +470,13 @@ void psxRcntUpdate()
     }
 
     if ((cycle - rcnts[4].cycleStart) >= rcnts[4].cycle) {
+#ifdef __WARPOS__
+        WOS_CRUMB(70);
+#endif
         SPU_async(cycle, 1, Config.PsxType);
+#ifdef __WARPOS__
+        WOS_CRUMB(71);
+#endif
         psxRcntReset(4);
     }
 

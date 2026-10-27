@@ -219,6 +219,7 @@ void wos_video_swap(void)
 
     if (!s_open)
         return;
+    WOS_CRUMB(21);
     t0 = wos_now_us();
     mglSwitchDisplay();
     s_stat_swap_us += wos_now_us() - t0;
@@ -242,6 +243,7 @@ void wos_video_limit(float hz)
         return;
     }
     if (now < s_next_frame_us) {
+        WOS_CRUMB2(13, (uint32_t)(s_next_frame_us - now));
         s_stat_wait_us += s_next_frame_us - now;
         wos_wait_until_us(s_next_frame_us);
     } else {

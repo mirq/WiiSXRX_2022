@@ -1,6 +1,8 @@
-.KEY image,args/F
+.KEY line/F
 ; WiiStation (PlayStation emulator) for WarpOS on Radeon 9200 (MiniGL R200).
 ; Run from the WiiStation directory:  Execute WiiStation-R200 [image] [Key=value ...]
+; The whole line goes to WiiStation as typed (quote an image path with spaces):
+; a template of separate keys would read Core=1 as a keyword assignment.
 ; With no image an ASL requester asks for one.
 ; Boot protocol: cold boot, C:InitPPC once, then this script.
 FailAt 21
@@ -20,4 +22,4 @@ Stack 65536
 Run >NIL: minigl_ppc_host >NIL:
 Wait 6
 Stack 1048576
-WiiStation "<image>" <args>
+WiiStation <line>

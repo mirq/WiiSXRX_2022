@@ -124,6 +124,9 @@
 #include "gpu.h"
 #include "../gpu.h"
 #include "../database.h"
+#ifdef __WARPOS__
+#include "../WarpOS/wos_sys.h"
+#endif
 
 
 ////////////////////////////////////////////////////////////////////////
@@ -480,11 +483,17 @@ void PEOPS_GPUupdateLace(void)
   static char oldframeLimit = 1;
   lGPUstatusRet^=0x80000000;                           // odd/even bit
 
+#ifdef __WARPOS__
+  WOS_CRUMB(10);
+#endif
   if ( frameLimit[0] != oldframeLimit)
 	  GPUsetframelimit(0);
   oldframeLimit = frameLimit[0];
 
   OldGpuCheckFrameRate();
+#ifdef __WARPOS__
+  WOS_CRUMB(11);
+#endif
 
  if(lightGun == LIGHTGUN_GUNCON || lightGun == LIGHTGUN_JUST)
 	 bDoVSyncUpdate=TRUE;
@@ -1185,6 +1194,9 @@ long PEOPS_GPUdmaChain(unsigned long * baseAddrL, unsigned long addr, uint32_t *
 #endif //PEOPS_SDLOG
 
  GPUIsBusy;
+#ifdef __WARPOS__
+ WOS_CRUMB2(50, addr);
+#endif
 
  lUsedAddr[0]=lUsedAddr[1]=lUsedAddr[2]=0xffffff;
 
@@ -1208,6 +1220,9 @@ long PEOPS_GPUdmaChain(unsigned long * baseAddrL, unsigned long addr, uint32_t *
  while (addr != 0xffffff);
 
  GPUIsIdle;
+#ifdef __WARPOS__
+ WOS_CRUMB(51);
+#endif
 
  return dmaWords;
 }

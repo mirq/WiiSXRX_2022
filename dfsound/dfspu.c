@@ -1239,7 +1239,15 @@ long DF_SPUinit(void)
   spu_config.iTempo = 0;
   spu_config.iUseThread = 0; // no effect if only 1 core is detected
 
+#ifdef __WARPOS__
+  {
+   /* SPU_BUF_LO is a fixed address in the Wii's MEM2. */
+   static unsigned char spu_ram[512 * 1024] __attribute__((aligned(32)));
+   spu.spuMemC = spu_ram;
+  }
+#else
   spu.spuMemC = (unsigned char  *)SPU_BUF_LO;
+#endif
   InitADSR();
 
   spu.s_chan = (SPUCHAN *)s_chan;

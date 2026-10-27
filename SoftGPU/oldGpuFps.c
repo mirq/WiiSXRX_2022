@@ -40,6 +40,9 @@
 //*************************************************************************//
 
 #include "../gpulib/stdafx.h"
+#ifdef __WARPOS__
+#include "../WarpOS/wos_sys.h"
+#endif
 
 #define _IN_FPS
 
@@ -134,6 +137,9 @@ void FrameCap (void)
 
    curticks = timeGetTime();
    _ticks_since_last_update = curticks - lastticks;
+#ifdef __WARPOS__
+   WOS_CRUMB2(12, TicksToWait);
+#endif
 
     if((_ticks_since_last_update > TicksToWait) ||
        (curticks <lastticks))

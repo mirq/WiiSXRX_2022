@@ -63,7 +63,7 @@ uint64_t wos_now_us(void)
     uint64_t tb, step;
 
     if (s_clock_sys < 0) {
-        const char *v = getenv("WSX_CLOCK");
+        const char *v = wos_getenv("WSX_CLOCK");
         s_clock_sys = (v && !strcmp(v, "sys")) ? 1 : 0;
     }
     if (s_clock_sys) {
@@ -147,9 +147,30 @@ void wos_free_ppc(void *p)
 
 /* ---- Environment ------------------------------------------------------ */
 
+/* ENV: through dos.library: newlib's getenv() finds nothing under MOS2WOS.
+ * The value lives in a static buffer until the next call. */
+const char *wos_getenv(const char *name)
+{
+    static char buf[256];
+    if (GetVar((CONST_STRPTR)name, (STRPTR)buf, sizeof(buf), 0) < 0)
+        return NULL;
+    return buf;
+}
+
+/* 1 when the variable is set, which also deletes it: a one-shot request. */
+int wos_env_take(const char *name)
+{
+    char buf[4];
+    if (GetVar((CONST_STRPTR)name, (STRPTR)buf, sizeof(buf), 0) < 0)
+        return 0;
+    DeleteVar((CONST_STRPTR)name, GVF_GLOBAL_ONLY);
+    DeleteVar((CONST_STRPTR)name, GVF_LOCAL_ONLY);
+    return 1;
+}
+
 int wos_env_int(const char *name, int def)
 {
-    const char *v = getenv(name);
+    const char *v = wos_getenv(name);
     return (v && *v) ? atoi(v) : def;
 }
 
@@ -198,6 +219,9 @@ void wos_log(const char *fmt, ...)
     if (!s_log_len || s_log_buf[s_log_len - 1] != '\n')
         s_log_buf[s_log_len++] = '\n';
 }
+
+int wos_trace_budget;
+volatile uint32_t wos_crumb[8] __attribute__((aligned(32)));
 
 void wos_log_tick(void)
 {
@@ -290,6 +314,9 @@ int wos_sys_init(void)
     LowLevelBase  = OpenLibrary("lowlevel.library", 40);   /* optional: pads */
 
     wos_log("WiiStation WarpOS build %s (%s %s)", WOS_BUILD_STAMP, __DATE__, __TIME__);
+#ifdef WOS_CRUMBS
+    wos_log("[diag] crumbs at %p", (void *)wos_crumb);
+#endif
     if (!IntuitionBase || !GfxBase) {
         wos_log("intuition.library or graphics.library v39 missing");
         return -1;

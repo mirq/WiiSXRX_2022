@@ -22,6 +22,9 @@
 */
 
 #include "r3000a.h"
+#ifdef __WARPOS__
+#include "WarpOS/wos_sys.h"
+#endif
 #include "psxhw.h"
 #include "psxdma.h"
 #include "cdrom.h"
@@ -155,9 +158,22 @@ void psxException(u32 cause, enum R3000Abdt bdt, psxCP0Regs *cp0) {
 
 extern u32 psxNextCounter, psxNextsCounter;
 void psxBranchTest() {
+#ifdef __WARPOS__
+	{
+		extern void wos_watchdog(void);
+		static unsigned wos_wd;
+		WOS_CRUMB_SET(2, psxRegs.pc);
+		WOS_CRUMB(61);
+		if (!(++wos_wd & 0xffff))
+			wos_watchdog();
+	}
+#endif
 
 	if ((psxRegs.cycle - psxNextsCounter) >= psxNextCounter)
 		psxRcntUpdate();
+#ifdef __WARPOS__
+	WOS_CRUMB2(62, psxRegs.interrupt);
+#endif
 
 	if (psxRegs.interrupt) {
 		if ((psxRegs.interrupt & (1 << PSXINT_SIO))) { // sio
@@ -239,11 +255,17 @@ void psxBranchTest() {
 //		}
 	}
 
+#ifdef __WARPOS__
+	WOS_CRUMB(68);
+#endif
 	psxRegs.CP0.n.Cause &= ~0x400;
 	if (psxHu32(0x1070) & psxHu32(0x1074))
 		psxRegs.CP0.n.Cause |= 0x400;
 	if (((psxRegs.CP0.n.Cause | 1) & psxRegs.CP0.n.SR & 0x401) == 0x401)
 		psxException(0, 0, &psxRegs.CP0);
+#ifdef __WARPOS__
+	WOS_CRUMB(69);
+#endif
 }
 
 void psxJumpTest() {

@@ -26,6 +26,7 @@
 #include "../sio.h"
 #include "../cdrom.h"
 #include "../gpu.h"
+#include "../psxcounters.h"
 #include "../Gamecube/wiiSXconfig.h"
 #include "../Gamecube/DEBUG.h"
 #include "../Gamecube/fileBrowser/fileBrowser.h"
@@ -182,7 +183,7 @@ static void read_env(void)
         char name[64];
         const char *v;
         snprintf(name, sizeof(name), "WSX_%s", OPTIONS[i].key);
-        if ((v = getenv(name)) != NULL && *v) {
+        if ((v = wos_getenv(name)) != NULL && *v) {
             snprintf(kv, sizeof(kv), "%s=%s", OPTIONS[i].key, v);
             set_option(kv);
         }
@@ -363,25 +364,88 @@ static unsigned s_pending_actions;
 static int      s_auto_frames;          /* WSX_AUTOFRAMES: quit after this many */
 static uint64_t s_start_us;
 
+static void save_memcards(void);
+
+/* A quit sets stop, which ends the CPU's Execute loop -- but the core has
+ * loops of its own that do not look at it (the HLE BIOS runs game callbacks
+ * in one), and a game can sit in such a loop for good. Two seconds after the
+ * request the program is shut down from here instead. */
+static void force_quit(void)
+{
+    wos_log("quit: the CPU loop did not return (pc %08lx); shutting down from the vblank",
+            (unsigned long)psxRegs.pc);
+    save_memcards();
+    SysClose();
+    wos_video_close();
+    wos_input_shutdown();
+    wos_leave_progdir();
+    wos_sys_shutdown();
+    exit(0);
+}
+
 /* Once a PSX frame (psxcounters.c, at the vertical blank). */
 void SysUpdate(void)
 {
+    static unsigned quit_frames;
     unsigned act;
 
     framesdone++;
+    WOS_CRUMB_SET(1, framesdone);
+    WOS_CRUMB_SET(2, psxRegs.pc);
+    WOS_CRUMB(1);
     act = wos_input_poll(wos_video_window());
+    WOS_CRUMB(2);
     if (act & WOS_ACT_FASTFWD) {
         frameLimit[0] = frameLimit[0] ? FRAMELIMIT_NONE : FRAMELIMIT_AUTO;
         act &= ~WOS_ACT_FASTFWD;
     }
     if (s_auto_frames && framesdone >= s_auto_frames)
         act |= WOS_ACT_QUIT;
+    /* SetEnv WSX_QUIT 1 quits through the normal path (memory cards saved,
+     * MiniGL closed): what a remote session uses instead of Break. */
+    if (framesdone % 50 == 0 && wos_env_take("WSX_QUIT"))
+        act |= WOS_ACT_QUIT;
     if (act) {
+        if ((act & WOS_ACT_QUIT) && !(s_pending_actions & WOS_ACT_QUIT))
+            wos_log("quit requested at frame %d", framesdone);
         s_pending_actions |= act;
         stop = 1;
     }
+    if ((s_pending_actions & WOS_ACT_QUIT) && ++quit_frames > 120)
+        force_quit();
     wos_video_frame_stats();
     wos_log_tick();
+    WOS_CRUMB(3);
+}
+
+/* From psxBranchTest every 64K calls (r3000a.c): a vblank that has not come
+ * for 3 s means the PSX side is stuck somewhere SysUpdate never runs. Log
+ * where, once a second, and still honour a quit request. */
+void wos_watchdog(void)
+{
+    static uint64_t last_us, last_frames, said_us;
+    uint64_t now = wos_now_us();
+
+    WOS_CRUMB_SET(2, psxRegs.pc);
+    WOS_CRUMB(60);
+    if (framesdone != last_frames || !last_us) {
+        last_frames = framesdone;
+        last_us = now;
+        return;
+    }
+    if (now - last_us < 3000000u || now - said_us < 1000000u)
+        return;
+    said_us = now;
+    wos_log("[watchdog] no vblank for %lu ms: pc %08lx cycle %08lx next %08lx+%08lx int %08lx sr %08lx",
+            (unsigned long)((now - last_us) / 1000), (unsigned long)psxRegs.pc,
+            (unsigned long)psxRegs.cycle, (unsigned long)psxNextsCounter,
+            (unsigned long)psxNextCounter, (unsigned long)psxRegs.interrupt,
+            (unsigned long)psxRegs.CP0.n.SR);
+    wos_log_flush();
+    if ((wos_input_poll(wos_video_window()) & WOS_ACT_QUIT) || wos_env_take("WSX_QUIT")) {
+        s_pending_actions |= WOS_ACT_QUIT;
+        stop = 1;
+    }
 }
 
 void go(void)
@@ -429,6 +493,7 @@ static int load_image(const char *path)
         saveFile_deinit(saveFile_dir);
     }
     wos_log("loaded %s (id %.9s, %s)", path, CdromId, Config.PsxType ? "PAL" : "NTSC");
+    wos_log("[diag] psxM at %p", (void *)psxM);
     return 0;
 }
 
@@ -469,12 +534,18 @@ int main(int argc, char **argv)
     }
 
     /* The image may be relative to the Shell's directory: name it fully
-     * before running from the program's own drawer. */
+     * before running from the program's own drawer. Every word that is not
+     * a Key=value is part of it: Execute drops the quotes of a script
+     * argument, so "Work:Some dir/game.bin" arrives as two words. */
     for (i = 1; i < argc; i++)
         if (!strchr(argv[i], '=') && argv[i][0]) {
-            strncpy(s_image, argv[i], sizeof(s_image) - 1);
-            wos_make_absolute(s_image, sizeof(s_image));
+            size_t n = strlen(s_image);
+            if (n && n + 1 < sizeof(s_image))
+                s_image[n++] = ' ';
+            strncpy(s_image + n, argv[i], sizeof(s_image) - 1 - n);
         }
+    if (s_image[0])
+        wos_make_absolute(s_image, sizeof(s_image));
     wos_enter_progdir();
 
     default_settings();
@@ -495,6 +566,7 @@ int main(int argc, char **argv)
         goto out;
     }
     wos_log("image %s core %d gpu %d", s_image, (int)dynacore, (int)gpuPlugin);
+    wos_log("[diag] psxRegs at %p", (void *)&psxRegs);
 
     wos_files_install(SAVE_DIR, s_bios_dir);
     bios_init();

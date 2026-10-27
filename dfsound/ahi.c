@@ -217,6 +217,7 @@ static int ahi_feed(void *data, int bytes)
     const int16_t *pcm = (const int16_t *)data;
     uint32_t frames, w, first;
 
+    WOS_CRUMB2(30, bytes);
     if (!s_open || bytes <= 0)
         return 0;
     frames = (uint32_t)bytes / FRAME_BYTES;
