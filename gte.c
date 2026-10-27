@@ -313,22 +313,14 @@ static inline void MTC2(u32 value, int reg) {
 
         case 30:
             {
-                int a;
+                /* leading sign bits; 32 for 0 and -1. (The bit loop here
+                 * before hung on -1: its 1 << -1 let GCC drop the i >= 0
+                 * test.) */
+                u32 a = value;
                 gteLZCS = value;
-
-                a = gteLZCS;
-                if (a > 0) {
-                    int i;
-                    for (i = 31; (a & (1 << i)) == 0 && i >= 0; i--);
-                    gteLZCR = 31 - i;
-                } else if (a < 0) {
-                    int i;
-                    a ^= 0xffffffff;
-                    for (i = 31; (a & (1 << i)) == 0 && i >= 0; i--);
-                    gteLZCR = 31 - i;
-                } else {
-                    gteLZCR = 32;
-                }
+                if ((s32)a < 0)
+                    a = ~a;
+                gteLZCR = a ? __builtin_clz(a) : 32;
             }
             break;
 

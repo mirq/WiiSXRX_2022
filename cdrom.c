@@ -1958,8 +1958,11 @@ void psxDma3(u32 madr, u32 bcr, u32 chcr) {
 				cdr.FifoOffset += size;
 			}
 			if (size < cdsize) {
+				/* the padding stays in RAM too */
+				u32 end = cdsize < max_words * 4 ? cdsize : max_words * 4;
 				CDR_LOG_I("cdrom: dma3 %d/%d\n", size, cdsize);
-				memset(ptr + size, cdr.Transfer[0x920], cdsize - size);
+				if (end > (u32)size)
+					memset(ptr + size, cdr.Transfer[0x920], end - size);
 			}
 			psxCpu->Clear(madr, cdsize / 4);
 

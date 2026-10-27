@@ -370,6 +370,89 @@ int wos_request_image(char *buf, unsigned size)
     return ok;
 }
 
+/* ---- PPC exceptions ---------------------------------------------------- */
+
+/* A data, instruction or program exception ends the PPC task without a
+ * word in the log. The handler keeps the first one's context here, for
+ * amiga_inspect_memory afterwards: [0] 0xe5c0 once set, [1] the exception
+ * id, [2] srr0, [3] srr1, [4] dar, [5] dsisr, [6] lr, [7] ctr, [8..39] r0..r31.
+ * Then WarpOS goes on as before. */
+volatile uint32_t wos_exc[40] __attribute__((aligned(32)));
+static APTR s_exc_handler;
+
+static ULONG wos_exc_handler(struct EXCContext *ec)
+{
+    int i;
+    if (wos_exc[0] != 0xe5c0) {
+        wos_exc[1] = ec->ec_ExcID;
+        wos_exc[2] = ec->ec_UPC.ec_SRR0;
+        wos_exc[3] = ec->ec_SRR1;
+        wos_exc[4] = ec->ec_DAR;
+        wos_exc[5] = ec->ec_DSISR;
+        wos_exc[6] = ec->ec_LR;
+        wos_exc[7] = ec->ec_CTR;
+        for (i = 0; i < 32; i++)
+            wos_exc[8 + i] = ec->ec_GPR[i];
+        wos_exc[0] = 0xe5c0;
+        for (i = 0; i < 40; i += 8)
+            __asm__ volatile("dcbst 0,%0" : : "r"(&wos_exc[i]) : "memory");
+        __asm__ volatile("sync");
+    }
+    return EXCRETURN_NORMAL;
+}
+
+/* exit() from anywhere but our own shutdown would leave no trace */
+static int s_shutting_down;
+static void wos_atexit(void)
+{
+    if (s_shutting_down)
+        return;
+    wos_log("[diag] exit() outside the shutdown: crumbs %lu frame %lu pc %08lx val %08lx",
+            (unsigned long)wos_crumb[0], (unsigned long)wos_crumb[1],
+            (unsigned long)wos_crumb[2], (unsigned long)wos_crumb[3]);
+    {
+        /* the return addresses up the stack (SysV back chain: [0] the
+         * caller's frame, [1] its saved lr); wos_atexit's own address
+         * gives the load offset for addr2line */
+        uint32_t *fp = (uint32_t *)__builtin_frame_address(0);
+        char line[300];
+        int i, len = snprintf(line, sizeof line, "[diag] exit() stack (wos_log at %p):", (void *)wos_log);
+        for (i = 0; i < 24 && fp && ((uint32_t)fp & 3) == 0 && len < (int)sizeof line - 12; i++) {
+            uint32_t *next = (uint32_t *)fp[0];
+            if (!next || next <= fp)
+                break;
+            len += snprintf(line + len, sizeof line - len, " %08lx", (unsigned long)next[1]);
+            fp = next;
+        }
+        wos_log("%s", line);
+    }
+    wos_log_flush();
+}
+
+static void wos_exc_install(void)
+{
+    atexit(wos_atexit);
+    struct TagItem tags[] = {
+        { EXCATTR_CODE, (ULONG)wos_exc_handler },
+        { EXCATTR_DATA, 0 },
+        { EXCATTR_TASK, 0 },
+        { EXCATTR_EXCID, EXCF_MCHECK | EXCF_DACCESS | EXCF_IACCESS | EXCF_PROGRAM },
+        { EXCATTR_FLAGS, EXCF_LOCAL | EXCF_LARGECONTEXT },
+        { EXCATTR_NAME, (ULONG)"WiiStation" },
+        { EXCATTR_PRI, 0 },
+        { TAG_END, 0 }
+    };
+    s_exc_handler = SetExcHandler(tags);
+    wos_log("[diag] exception record at %p%s", (void *)wos_exc, s_exc_handler ? "" : " (no handler)");
+    if (wos_env_int("WSX_CRASHTEST", 0)) {
+        wos_log("[diag] crash test: a store to 0xdeadbee0");
+        wos_log_flush();
+        *(volatile uint32_t *)0xdeadbee0 = 1;
+        wos_log("[diag] crash test: still here, exception record %08lx at %08lx",
+                (unsigned long)wos_exc[0], (unsigned long)wos_exc[2]);
+    }
+}
+
 /* ---- Libraries -------------------------------------------------------- */
 
 int wos_sys_init(void)
@@ -383,6 +466,7 @@ int wos_sys_init(void)
 #ifdef WOS_CRUMBS
     wos_log("[diag] crumbs at %p", (void *)wos_crumb);
 #endif
+    wos_exc_install();
     if (!IntuitionBase || !GfxBase) {
         wos_log("intuition.library or graphics.library v39 missing");
         return -1;
@@ -393,6 +477,11 @@ int wos_sys_init(void)
 
 void wos_sys_shutdown(void)
 {
+    s_shutting_down = 1;
+    if (s_exc_handler) {
+        RemExcHandler(s_exc_handler);
+        s_exc_handler = NULL;
+    }
     wos_log_flush();
     if (LowLevelBase)  CloseLibrary(LowLevelBase);
     if (AslBase)       CloseLibrary(AslBase);

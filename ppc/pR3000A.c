@@ -1039,6 +1039,7 @@ void gte##f(); \
 static void rec##f() { \
 	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
 	iFlushRegs(0); \
+	InvalidateCPURegs(); \
 	/*LWZ(PutHWRegSpecial(ARG1), OFFSET(&psxRegs, &psxRegs.gteCycle), GetHWRegSpecial(PSXREGS));*/ \
 	/*ADDI(0, GetHWRegSpecial(ARG1), (u32)(psxCP2time[_fFunct_(psxRegs.code)]<<2));*/ \
 	/*STW(0, OFFSET(&psxRegs, &psxRegs.gteCycle), GetHWRegSpecial(PSXREGS));*/ \
@@ -1052,12 +1053,16 @@ static void rec##f() { \
 /*
  * Keep the lighter CP2_FUNCNC call path, but publish the instruction word for
  * GTE operations whose C implementations inspect opcode modifiers (SF/LM).
+ * Both call C, so the volatile registers (r0-r12) are given up first: a
+ * special such as the branch target held there came back clobbered, and
+ * Tekken 3 died loading a fight.
  */
 #define CP2_FUNCNC_OP(f) \
 void gte##f(); \
 static void rec##f() { \
 	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
 	iFlushRegs(0); \
+	InvalidateCPURegs(); \
 	LIW(0, (u32)psxRegs.code); \
 	STW(0, OFFSET(&psxRegs, &psxRegs.code), GetHWRegSpecial(PSXREGS)); \
 	LIW(PutHWRegSpecial(ARG1), (struct psxCP2Regs *)&psxRegs.CP2D); \
@@ -1191,6 +1196,10 @@ static void recNotify(enum R3000Anote note, void *data) {
 }
 
 static void recApplyConfig() {
+    /* The interpreter runs a load in a branch delay slot (psxDelayTest),
+     * and its addCycle asserts a step: abort() ended Tekken 3 loading a
+     * fight. Its cycles count at the dynarec's rate. */
+    psxRegs.subCycleStep = 0x10000 * cycleMult / 100;
     // For the old dynamic compilation core, use fixed Cycles (CYCLE_MULT_DEFAULT)
     // and multipliers_override hack is applied to the timer 2
     //cycleMult = Config.cycle_multiplier_override && Config.cycle_multiplier == CYCLE_MULT_DEFAULT
@@ -1201,7 +1210,31 @@ static void recShutdown() {
 	ppcShutdown();
 }
 
+#if defined(__WARPOS__) && defined(WOS_CRUMBS)
+/* the last blocks run, for the log when the pc goes bad */
+static u32 wos_block_ring[32], wos_block_n;
+#endif
+
 static void recError() {
+#ifdef __WARPOS__
+	{
+		int i;
+		extern void wos_log_flush(void);
+		wos_log("[rec] no code at pc %08lx (ra %08lx, sp %08lx, cycle %08lx)",
+		        (unsigned long)psxRegs.pc, (unsigned long)psxRegs.GPR.n.ra,
+		        (unsigned long)psxRegs.GPR.n.sp, (unsigned long)psxRegs.cycle);
+#ifdef WOS_CRUMBS
+		for (i = 0; i < 32; i += 8) {
+			u32 *r = wos_block_ring, n = wos_block_n + i;
+			wos_log("[rec] blocks before: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
+			        (unsigned long)r[n & 31], (unsigned long)r[(n + 1) & 31], (unsigned long)r[(n + 2) & 31],
+			        (unsigned long)r[(n + 3) & 31], (unsigned long)r[(n + 4) & 31], (unsigned long)r[(n + 5) & 31],
+			        (unsigned long)r[(n + 6) & 31], (unsigned long)r[(n + 7) & 31]);
+		}
+#endif
+		wos_log_flush();
+	}
+#endif
 	SysReset();
 	ClosePlugins();
 	SysMessage("Unrecoverable error while running recompiler\n");
@@ -1217,6 +1250,8 @@ __inline static void execute() {
 	char *p;
 
 	p =	(char*)PC_REC(psxRegs.pc);
+	if (unlikely(psxRegs.subCycleStep < 0x10000))     /* a save state from before */
+		recApplyConfig();
 	/*if (p != NULL)*/
 	/*else { recError(); return; }*/
 
@@ -1252,6 +1287,9 @@ __inline static void execute() {
 		#endif // DISP_DEBUG
 	}
 	recFunc = (void (**)()) (u32)p;
+#if defined(__WARPOS__) && defined(WOS_CRUMBS)
+	wos_block_ring[wos_block_n++ & 31] = psxRegs.pc;
+#endif
 
 	recRun(*recFunc, (u32)&psxRegs, (u32)&psxM);
 }
@@ -3491,6 +3529,8 @@ static void (*recCP2BSC[32])(struct psxCP2Regs *regs) = {
 #ifdef __WARPOS__
 int wos_vlc_match(u32 pc);
 int wos_stnext_match(u32 pc);
+int wos_randwait_match(u32 pc);
+u32 wos_randwait_run(u32 budget);
 void wos_stnext_poll(void);
 u32 wos_vlc_run(u32 budget);
 static void wos_vlc_block(void)
@@ -3501,6 +3541,36 @@ static void wos_vlc_block(void)
 	u32 t0 = wos_tb_lo();
 	psxRegs.cycle += wos_vlc_run(budget) * cycleMult / 100;
 	wos_prof_ticks[WOS_PROF_VLC] += wos_tb_lo() - t0;
+}
+/* SetEnv WSX_HYB lo-hi (hex PSX addresses): blocks starting in that range
+ * run on the interpreter, to find translated code that goes wrong. */
+static u32 wos_hyb_lo = 1, wos_hyb_hi;
+static int wos_hyb_match(u32 pc)
+{
+	if (wos_hyb_lo == 1) {
+		const char *v = wos_getenv("WSX_HYB");
+		wos_hyb_lo = wos_hyb_hi = 0;
+		if (v && *v) {
+			char *e;
+			wos_hyb_lo = strtoul(v, &e, 16);
+			wos_hyb_hi = *e == '-' ? strtoul(e + 1, NULL, 16) : wos_hyb_lo;
+			wos_log("[diag] blocks %08lx-%08lx on the interpreter",
+			        (unsigned long)wos_hyb_lo, (unsigned long)wos_hyb_hi);
+		}
+	}
+	return wos_hyb_hi && pc >= wos_hyb_lo && pc < wos_hyb_hi;
+}
+extern R3000Acpu psxInt;
+static void wos_hyb_block(void)
+{
+	psxInt.ExecuteBlock(0);
+}
+
+static void wos_randwait_block(void)
+{
+	s32 d = (s32)(wos_next_event - psxRegs.cycle);
+	u32 budget = d > 0 ? (u32)d * 100 / cycleMult + 1 : 1;
+	psxRegs.cycle += wos_randwait_run(budget) * cycleMult / 100;
 }
 #endif
 
@@ -3594,6 +3664,19 @@ __inline static void recRecompile() {
 	 * (WarpOS/wos_vlc.c), which leaves the pc at the return address. */
 	if (wos_vlc_match(pc)) {
 		CALLFunc((u32)wos_vlc_block);
+		FlushAllHWReg();
+		CALLFunc((u32)psxBranchTest);
+		Return();
+		branch = 1;
+	}
+	else if (wos_hyb_match(pc)) {
+		CALLFunc((u32)wos_hyb_block);
+		Return();
+		branch = 1;
+	}
+	/* Tekken 3's wait for the vblank flag, as C up to the next event */
+	else if (wos_randwait_match(pc)) {
+		CALLFunc((u32)wos_randwait_block);
 		FlushAllHWReg();
 		CALLFunc((u32)psxBranchTest);
 		Return();

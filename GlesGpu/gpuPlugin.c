@@ -36,6 +36,7 @@
 #include <string.h>
 #ifdef __WARPOS__
 #include "../WarpOS/wos_gx.h"
+#include "../WarpOS/wos_sys.h"
 #else
 #include <gccore.h>
 #endif
@@ -2052,61 +2053,64 @@ void CALLBACK GL_GPUwriteData(unsigned long gdata)
 
 
 ////////////////////////////////////////////////////////////////////////
-// Pete Special: make an 'intelligent' dma chain check (<-Tekken3)
-////////////////////////////////////////////////////////////////////////
-
-static unsigned long lUsedAddr[3];
-
-__inline BOOL CheckForEndlessLoop(unsigned long laddr)
-{
-if(laddr==lUsedAddr[1]) return TRUE;
-if(laddr==lUsedAddr[2]) return TRUE;
-
-if(laddr<lUsedAddr[0]) lUsedAddr[1]=laddr;
-else                   lUsedAddr[2]=laddr;
-lUsedAddr[0]=laddr;
-return FALSE;
-}
-
-////////////////////////////////////////////////////////////////////////
 // core gives a dma chain to gpu: same as the gpuwrite interface funcs
+//
+// Loops are found as gpulib does: after LD_THRESHOLD entries every link
+// walked gets bit 23 (a dma error on the PSX, so no game sets it), which
+// ends the chain at the first entry seen twice; the marks are taken off
+// afterwards. Pete's check (two addresses) let Tekken 3's longer loops
+// through to the 2000000-command limit. The address always stays in the
+// 2 MB of RAM.
 ////////////////////////////////////////////////////////////////////////
+
+#define LD_THRESHOLD (8 * 1024)
 
 long CALLBACK GL_GPUdmaChain(unsigned long * baseAddrL, unsigned long addr, uint32_t *progress_addr, int32_t *cycles_last_cmd)
 {
- unsigned char * baseAddrB;
- unsigned int DMACommandCounter = 0;
- long dmaWords = 0;
+ unsigned long *ram = baseAddrL;
+ unsigned long ld_addr = 0;
+ long count = 0, dmaWords = 0;
 
+#ifdef __WARPOS__
+ WOS_CRUMB2(70, addr);
+#endif
+ if(bIsFirstFrame) GLinitialize(NULL, NULL);
 
-if(bIsFirstFrame) GLinitialize(NULL, NULL);
+ GPUIsBusy;
 
-GPUIsBusy;
+ for (; !(addr & 0x800000); count++)
+  {
+   unsigned long *list = ram + ((addr & 0x1ffffc) >> 2);
+   unsigned long head = GETLE32(list);
+   int len = head >> 24;
 
-lUsedAddr[0]=lUsedAddr[1]=lUsedAddr[2]=0xffffff;
+   dmaWords += 1 + len;
+   if (len > 0) GL_GPUwriteDataMem(list + 1, len);
+   addr = head & 0xffffff;
 
-baseAddrB = (unsigned char*) baseAddrL;
-
-do
- {
-  if(iGPUHeight==512) addr&=0x1FFFFC;
-
-  if(DMACommandCounter++ > 2000000) break;
-  if(CheckForEndlessLoop(addr)) break;
-
-   short count = baseAddrB[addr+3];
-   dmaWords += 1 + count;
-
-   unsigned long dmaMem=addr+4;
-
-  if(count>0) GL_GPUwriteDataMem(&baseAddrL[dmaMem>>2],count);
-
-   addr = GETLE32(&baseAddrL[addr>>2])&0xffffff;
+   if (count == LD_THRESHOLD)
+    ld_addr = addr;
+   if (count > LD_THRESHOLD)
+    PUTLE32(list, GETLE32(list) | 0x800000);
   }
- while (!(addr & 0x800000)); // contrary to some documentation, the end-of-linked-list marker is not actually 0xFF'FFFF
-                             // any pointer with bit 23 set will do.
+
+ if (ld_addr)
+  {
+   count -= LD_THRESHOLD + 2;
+   addr = ld_addr & 0x1ffffc;
+   while (count-- > 0)
+    {
+     unsigned long *list = ram + (addr >> 2);
+     unsigned long head = GETLE32(list);
+     addr = head & 0x1ffffc;
+     PUTLE32(list, head & ~0x800000);
+    }
+  }
 
  GPUIsIdle;
+#ifdef __WARPOS__
+ WOS_CRUMB2(71, dmaWords);
+#endif
 
  return dmaWords;
 }

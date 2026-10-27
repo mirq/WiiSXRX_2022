@@ -860,3 +860,89 @@ void wos_stnext_poll(void)
     s_st_ra = ra;
     s_st_cycle = c;
 }
+
+/* Tekken 3's wait for the vertical blank: it steps two random seeds until
+ * the vblank handler sets a flag. Only an interrupt sets it, so the loop
+ * runs here as C up to the next event, each round exactly as the PSX code
+ * would, and the seeds come out as varied as before. */
+static const u32 s_rw_loop[] = {
+    0x0c000000, 0x00000000, 0x8e030000, 0x8e240000, 0x24630001, 0x00031140,
+    0x00431021, 0x00021080, 0x00431023, 0x00021080, 0x00431023, 0x00021080,
+    0x00431021, 0x00021940, 0x00431021, 0x1080fff0, 0xae020000,
+};
+static const u32 s_rw_rand[] = {
+    0x3c040000, 0x8c830000, 0x00000000, 0x00031080, 0x00431021, 0x24420001,
+    0x03e00008, 0xac820000,
+};
+#define RW_LOOP (sizeof s_rw_loop / 4)
+#define RW_RAND (sizeof s_rw_rand / 4)
+#define RW_INSTR (RW_LOOP - 2 + 2 + RW_RAND)    /* one round */
+
+static u32 s_rw_pc, s_rw_seed, s_rw_off2, s_rw_offflag;
+unsigned int wos_rw_rounds;
+
+static int rw_words(u32 pc, const u32 *ref, unsigned n, u32 *w)
+{
+    unsigned i;
+    for (i = 0; i < n; i++) {
+        u32 op = ref[i] >> 26;
+        u32 m = op == 3 ? 0xfc000000 : (op == 0x0f || op == 0x23 || op == 0x2b) ? 0xffff0000 : ~0u;
+        w[i] = code_at(pc + 4 * i);
+        if ((w[i] & m) != ref[i])
+            return 0;
+    }
+    return 1;
+}
+
+int wos_randwait_match(u32 pc)
+{
+    u32 w[RW_LOOP], r[RW_RAND], target;
+
+    if (s_mode == 0 || (pc & 3) || !PSXM(pc) || !PSXM(pc + 4 * RW_LOOP - 4) ||
+        code_at(pc) >> 26 != 3 || !rw_words(pc, s_rw_loop, RW_LOOP, w))
+        return 0;
+    target = (pc & 0xf0000000) | ((w[0] & 0x03ffffff) << 2);
+    if (!PSXM(target) || !PSXM(target + 4 * RW_RAND - 4) || !rw_words(target, s_rw_rand, RW_RAND, r))
+        return 0;
+    if ((r[1] & 0xffff) != (r[7] & 0xffff) || (w[2] & 0xffff) != (w[16] & 0xffff))
+        return 0;
+    s_rw_pc = pc;
+    s_rw_seed = ((r[0] & 0xffff) << 16) + (u32)(s32)(s16)(r[1] & 0xffff);
+    s_rw_off2 = (u32)(s32)(s16)(w[2] & 0xffff);      /* off s0 */
+    s_rw_offflag = (u32)(s32)(s16)(w[3] & 0xffff);   /* off s1 */
+    return 1;
+}
+
+/* Returns the instructions it took; leaves the pc at the loop head, or past
+ * the loop once the flag is set. */
+u32 wos_randwait_run(u32 budget)
+{
+    u32 *r = psxRegs.GPR.r;
+    u8 *ps = PSXM(s_rw_seed), *p2 = PSXM(r[16] + s_rw_off2), *pf = PSXM(r[17] + s_rw_offflag);
+    u32 seed, v2, flag, n = 0, v0, v1;
+
+    if (!ps || !p2 || !pf) {
+        /* cannot happen in the game; take one round the slow way */
+        psxRegs.pc = s_rw_pc;
+        return 0;
+    }
+    seed = LOAD_SWAP32p(ps);
+    v2 = LOAD_SWAP32p(p2);
+    flag = LOAD_SWAP32p(pf);
+    do {
+        seed = (seed << 2) + seed + 1;
+        v1 = v2 + 1;
+        v0 = v1 * 69069u;
+        v2 = v0;
+        n += RW_INSTR;
+        wos_rw_rounds++;
+    } while (!flag && n < budget);
+    STORE_SWAP32p((u32 *)ps, seed);
+    STORE_SWAP32p((u32 *)p2, v2);
+    r[4] = flag;                    /* a0 */
+    r[3] = (v1 * 2093u) << 5;       /* v1, as the last shift left it */
+    r[2] = v2;
+    r[31] = s_rw_pc + 8;
+    psxRegs.pc = flag ? s_rw_pc + 4 * RW_LOOP : s_rw_pc;
+    return n;
+}

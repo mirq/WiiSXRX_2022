@@ -493,9 +493,10 @@ void wos_video_frame_stats(void)
                                         (unsigned long)(wos_ev_why[best] / s_stat_frames));
                     }
                     line[len] = 0;
-                    wos_log("[prof] movie polls %u, %u skipped to the next event; next event set by (0 counters, 1 irq, 2+int) a frame:%s",
-                            wos_st_polls, wos_st_skips, line);
-                    wos_st_polls = wos_st_skips = 0;
+                    extern unsigned int wos_rw_rounds;
+                    wos_log("[prof] movie polls %u, %u skipped to the next event; vblank wait rounds as C %u; next event set by (0 counters, 1 irq, 2+int) a frame:%s",
+                            wos_st_polls, wos_st_skips, wos_rw_rounds, line);
+                    wos_st_polls = wos_st_skips = wos_rw_rounds = 0;
                     memset(wos_ev_why, 0, sizeof wos_ev_why);
                 }
             }
