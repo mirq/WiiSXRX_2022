@@ -192,6 +192,10 @@ static void read_env(void)
 
 static void default_settings(void)
 {
+    /* sio.c answers a pad poll only for a port with a pad type: both ports
+     * have a plain pad (wos_pad.c says pad 2 is absent while no stick is). */
+    padType[0] = PADTYPE_GAMECUBE;
+    padType[1] = PADTYPE_GAMECUBE;
     audioEnabled     = 1;
     spuInterpolation = SIMPLE_INTERPOLATION;
     showFPSonScreen  = 0;

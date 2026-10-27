@@ -58,8 +58,23 @@ as well. This is how `minigl_ppc.dll` was deployed.
 - `SetEnv WSX_QUIT 1` quits from the bridge. If the CPU loop does not
   return, the program shuts down from the vblank 2 s later.
 - Don't use Break or CTRL-C.
+- Keys from the bridge (`amiga_input_key`) reach the game:
+  - Return is Start, X is Cross, Esc quits.
+  - Hold a key for a few ticks; the game polls once a frame.
 - Settings in ENV: are read with `GetVar`; newlib's `getenv()` finds nothing
   under MOS2WOS.
+
+## Reading the log
+
+`Type` through the bridge cuts long output at about 4 KB, and the end of the
+log is then simply missing; it is not a crash. Read the end with
+`amiga_read_file` at an offset (file size from `List ... LFORMAT="%l"`).
+
+The log has three kinds of periodic line:
+- `[stats]`: fps, presents, late frames, upload/swap/wait time per frame.
+- `[prof]`: microseconds per frame by stage. "rcnt" contains lace/present
+  and the SPU, "irq" contains CD reads, and "the rest" is translated code.
+- `[pcs]`: the PSX pcs with the most time.
 
 ## When it hangs
 
