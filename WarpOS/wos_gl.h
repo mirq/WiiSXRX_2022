@@ -205,6 +205,10 @@ void  wosgl_Finish(void);
 #define glPRIMdrawGouraudLine                wosgl_PRIMdrawGouraudLine
 #define glPRIMdrawQuad                       wosgl_PRIMdrawQuad
 
+/* ends the glBegin a run of primitives with the same state shares */
+void  wosgl_batch_end(void);
+/* the same, and GL state was changed outside the draws */
+void  wosgl_gl_touched(void);
 void  wosgl_BindTextureBef(GLenum target, GLuint texture);
 void  wosgl_NoNeedMulConstColor(short flag);
 void  wosgl_ClearColor2(unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha);

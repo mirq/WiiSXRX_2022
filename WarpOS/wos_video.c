@@ -16,6 +16,7 @@
 
 #include "wos_video.h"
 #include "wos_sys.h"
+void wosgl_gl_touched(void);
 #include "wos_amiga.h"
 #include "../psxcommon.h"
 #include "wos_idle.h"
@@ -311,6 +312,7 @@ static void draw_textured_quad(void)
 
 void wos_video_present_vram(const void *src, int pitch, int rgb24, int w, int h)
 {
+    wosgl_gl_touched();      /* the primitives drawn so far first; GL state changes here */
     uint64_t t0, t1;
 
     if (!s_open || !src || w <= 0 || h <= 0)
@@ -336,6 +338,7 @@ void wos_video_present_vram(const void *src, int pitch, int rgb24, int w, int h)
 
 void wos_video_present_blank(void)
 {
+    wosgl_gl_touched();      /* the primitives drawn so far first; GL state changes here */
     if (!s_open)
         return;
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -345,6 +348,7 @@ void wos_video_present_blank(void)
 
 void wos_video_swap(void)
 {
+    wosgl_gl_touched();      /* the primitives drawn so far first; GL state changes here */
     uint64_t t0;
 
     if (!s_open)
@@ -409,8 +413,8 @@ void wos_video_frame_stats(void)
                     - st[WOS_PROF_IRQ] - st[WOS_PROF_MDEC] - st[WOS_PROF_GP1]);
         {
             extern unsigned int wos_tex_subs, wos_tex_texels, wos_draws;
-            wos_log("[prof] MiniGL: state %lu us, begin..end %lu us, %lu draws a frame",
-                    st[WOS_PROF_STATE], st[WOS_PROF_DRAW], (unsigned long)(wos_draws / s_stat_frames));
+            wos_log("[prof] MiniGL: state %lu us, vertices %lu us, glEnd %lu us, %lu draws a frame",
+                    st[WOS_PROF_STATE], st[WOS_PROF_DRAW], st[WOS_PROF_GLEND], (unsigned long)(wos_draws / s_stat_frames));
             wos_draws = 0;
             wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us, %lu partial uploads of %lu texels a frame",
                     st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xff),
@@ -493,10 +497,10 @@ void wos_video_frame_stats(void)
                                         (unsigned long)(wos_ev_why[best] / s_stat_frames));
                     }
                     line[len] = 0;
-                    extern unsigned int wos_rw_rounds;
-                    wos_log("[prof] movie polls %u, %u skipped to the next event; vblank wait rounds as C %u; next event set by (0 counters, 1 irq, 2+int) a frame:%s",
-                            wos_st_polls, wos_st_skips, wos_rw_rounds, line);
-                    wos_st_polls = wos_st_skips = wos_rw_rounds = 0;
+                    extern unsigned int wos_rw_rounds, wos_gq_polls, wos_gq_skips;
+                    wos_log("[prof] movie polls %u, %u skipped to the next event; gpu queue polls %u, %u skipped; vblank wait rounds as C %u; next event set by (0 counters, 1 irq, 2+int) a frame:%s",
+                            wos_st_polls, wos_st_skips, wos_gq_polls, wos_gq_skips, wos_rw_rounds, line);
+                    wos_st_polls = wos_st_skips = wos_rw_rounds = wos_gq_polls = wos_gq_skips = 0;
                     memset(wos_ev_why, 0, sizeof wos_ev_why);
                 }
             }

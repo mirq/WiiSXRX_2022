@@ -192,7 +192,7 @@ static GLuint make_plane(int w, int h, GLint wraps, GLint wrapt, const GLubyte *
 }
 
 static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra, int fmt)
-{
+{ wosgl_gl_touched();
     GLuint name = 0;
     GLint f = filter_for();
     glGenTextures(1, &name);
@@ -216,7 +216,7 @@ static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLuby
 }
 
 static void free_planes(WosTex *t)
-{
+{ wosgl_gl_touched();
     int i;
     if (t->main) glDeleteTextures(1, &t->main);
     if (t->semi) glDeleteTextures(1, &t->semi);
@@ -230,7 +230,7 @@ static void free_planes(WosTex *t)
 }
 
 static void set_plane_params(GLuint name, WosTex *t)
-{
+{ wosgl_gl_touched();
     GLint f = filter_for();
     glBindTexture(GL_TEXTURE_2D, name);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
@@ -242,7 +242,7 @@ static void set_plane_params(GLuint name, WosTex *t)
 /* Make the planes w x h: the spare of that size if there is one (1), else
  * none yet (0) -- the caller creates them. The old planes become a spare. */
 static int switch_planes(WosTex *t, int w, int h, int fmt)
-{
+{ wosgl_gl_touched();
     WosPlanes cur, found;
     int i, k = -1;
 
@@ -326,7 +326,7 @@ static int split_texels(const GLubyte *src, int pitch, int w, int h, int rgb24)
 }
 
 void wosgl_GenTextures(GLsizei n, GLuint *textures)
-{
+{ wosgl_gl_touched();
     int i;
     for (i = 1; i < MAX_TEX && n > 0; i++) {
         if (!s_tex[i].used) {
@@ -342,7 +342,7 @@ void wosgl_GenTextures(GLsizei n, GLuint *textures)
 }
 
 void wosgl_DeleteTextures(GLsizei n, const GLuint *textures)
-{
+{ wosgl_gl_touched();
     while (n-- > 0) {
         GLuint i = *textures++;
         if (i > 0 && i < MAX_TEX && s_tex[i].used) {
@@ -360,7 +360,7 @@ void wosgl_BindTextureBef(GLenum target, GLuint texture)
 }
 
 void wosgl_TexParameteri(GLenum target, GLenum pname, GLint param)
-{
+{ wosgl_gl_touched();
     WosTex *t = &s_tex[s_cur];
     if (target != GL_TEXTURE_2D || !s_cur)
         return;
@@ -380,12 +380,12 @@ void wosgl_TexParameteri(GLenum target, GLenum pname, GLint param)
 }
 
 void wosgl_TexParameterf(GLenum target, GLenum pname, GLfloat param)
-{
+{ wosgl_gl_touched();
     wosgl_TexParameteri(target, pname, (GLint)param);
 }
 
 void wosgl_TexEnvf(GLenum target, GLenum pname, GLfloat param)
-{
+{ wosgl_gl_touched();
     (void)target; (void)pname; (void)param;   /* the draws set the stage */
 }
 
@@ -406,7 +406,7 @@ static void to_565(const GLubyte *src, int pitch, int w, int h)
 
 /* Replace the bound texture's planes with w x h texels. */
 static int define_texture(int w, int h, const void *data, int rgb24)
-{
+{ wosgl_gl_touched();
     WosTex *t = &s_tex[s_cur];
     int type;
 
@@ -459,7 +459,7 @@ static int define_texture(int w, int h, const void *data, int rgb24)
 int wosgl_TexImage2D(GLenum target, GLint level, GLint internalFormat,
                      GLsizei width, GLsizei height, GLint border,
                      GLenum format, GLenum type, const GLvoid *data)
-{
+{ wosgl_gl_touched();
     (void)level; (void)internalFormat; (void)border; (void)format; (void)type;
     if (target != GL_TEXTURE_2D || !data)
         return 0;
@@ -469,7 +469,7 @@ int wosgl_TexImage2D(GLenum target, GLint level, GLint internalFormat,
 int wosgl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                         GLsizei width, GLsizei height, GLenum format, GLenum type,
                         const GLvoid *data)
-{
+{ wosgl_gl_touched();
     WosTex *t = &s_tex[s_cur];
     int tt;
     (void)level; (void)format; (void)type;
@@ -512,7 +512,7 @@ int wosgl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
 }
 
 void wosgl_InitRGBATextures(GLsizei width, GLsizei height)
-{
+{ wosgl_gl_touched();
     WosTex *t = &s_tex[s_cur];
     if (!s_cur || !t->used || width <= 0 || height <= 0)
         return;
@@ -526,7 +526,7 @@ void wosgl_InitRGBATextures(GLsizei width, GLsizei height)
 void wosgl_ResetMovieTexPtr(void) {}
 
 int wosgl_InitMovieTextures(GLsizei width, GLsizei height, void *texData)
-{
+{ wosgl_gl_touched();
     return define_texture(width, height, texData, s_rgb24);
 }
 
@@ -538,7 +538,7 @@ static int      s_read_px;
 /* Read w x h from the framebuffer at (x, y), top-left origin, as RGBA rows
  * top first. */
 static GLubyte *read_fb(int x, int y, int w, int h)
-{
+{ wosgl_gl_touched();
     int fbh = wos_video_height();
     int row;
 
@@ -562,7 +562,7 @@ static GLubyte *read_fb(int x, int y, int w, int h)
 
 int wosgl_CopyFramebufferGX(int x, int y, int w, int h,
                             int dstW, int dstH, int scale, void *dst)
-{
+{ wosgl_gl_touched();
     GLubyte *rgba = read_fb(x, y, w, h);
     unsigned char *out = (unsigned char *)dst;
     int bw = (dstW + 3) >> 2;
@@ -599,7 +599,7 @@ int wosgl_CopyFramebufferGX(int x, int y, int w, int h,
 }
 
 static int capture_into_bound(int srcW, int srcH, int intensity)
-{
+{ wosgl_gl_touched();
     WosTex *t = &s_tex[s_cur];
     GLubyte *rgba;
     int w, h, i;
@@ -643,7 +643,7 @@ int wosgl_CaptureFramebufferIntensityTexture(GLsizei srcWidth, GLsizei srcHeight
 
 void wosgl_CopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                              GLint x, GLint y, GLsizei width, GLsizei height)
-{
+{ wosgl_gl_touched();
     WosTex *t = &s_tex[s_cur];
     GLubyte *rgba;
     int i, fbh = wos_video_height();
@@ -670,7 +670,7 @@ void wosgl_CopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yo
 /* ---- State ------------------------------------------------------------- */
 
 void wosgl_Enable(GLenum cap)
-{
+{ wosgl_gl_touched();
     switch (cap) {
     case GL_TEXTURE_2D:   s_texture_enabled = 1; break;
     case GL_BLEND:        s_blend_enabled = 1; break;
@@ -680,7 +680,7 @@ void wosgl_Enable(GLenum cap)
 }
 
 void wosgl_Disable(GLenum cap)
-{
+{ wosgl_gl_touched();
     switch (cap) {
     case GL_TEXTURE_2D:   s_texture_enabled = 0; break;
     case GL_BLEND:        s_blend_enabled = 0; break;
@@ -690,14 +690,14 @@ void wosgl_Disable(GLenum cap)
 }
 
 void wosgl_Scissor(GLint x, GLint y, GLsizei width, GLsizei height)
-{
+{ wosgl_gl_touched();
     s_scissor[0] = x; s_scissor[1] = y; s_scissor[2] = width; s_scissor[3] = height;
     glScissor(x, y, width, height);
 }
 
 /* The whole framebuffer to black, scissor or not (the EFB copy's clear). */
 void wosgl_ClearFramebuffer(void)
-{
+{ wosgl_gl_touched();
     glDisable(GL_SCISSOR_TEST);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -707,7 +707,7 @@ void wosgl_ClearFramebuffer(void)
 
 /* opengx's texture cache: nothing to reset over MiniGL. */
 void resetTexCacheInfo(void) {}
-void wosgl_Viewport(GLint x, GLint y, GLsizei width, GLsizei height) { glViewport(x, y, width, height); }
+void wosgl_Viewport(GLint x, GLint y, GLsizei width, GLsizei height) { wosgl_gl_touched(); glViewport(x, y, width, height); }
 
 void wosgl_ClearColor2(unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha)
 {
@@ -718,7 +718,7 @@ void wosgl_ClearColor2(unsigned char red, unsigned char green, unsigned char blu
 }
 
 void wosgl_Clear(GLbitfield mask)
-{
+{ wosgl_gl_touched();
     glClearColor(s_clear[0], s_clear[1], s_clear[2], s_clear[3]);
     glClear(mask);
 }
@@ -736,30 +736,30 @@ void wosgl_DepthFunc(GLenum func)                  { s_zfunc = func; }
 
 static GLenum s_matrix_mode = GL_MODELVIEW;
 void wosgl_MatrixMode(GLenum mode)
-{
+{ wosgl_gl_touched();
     s_matrix_mode = mode;
     if (mode != GL_TEXTURE)
         glMatrixMode(mode);
 }
 void wosgl_LoadIdentity(void)
-{
+{ wosgl_gl_touched();
     if (s_matrix_mode != GL_TEXTURE)
         glLoadIdentity();
 }
 void wosgl_Ortho(int left, int right, int bottom, int top, int near_val, int far_val)
-{
+{ wosgl_gl_touched();
     glOrtho((GLdouble)left, (GLdouble)right, (GLdouble)bottom, (GLdouble)top,
             (GLdouble)near_val, (GLdouble)far_val);
 }
 void wosgl_Scalef(GLfloat x, GLfloat y, GLfloat z)
-{
+{ wosgl_gl_touched();
     if (s_matrix_mode != GL_TEXTURE)
         glScalef(x, y, z);
 }
 GLenum wosgl_GetError(void)                        { return GL_NO_ERROR; }
-const GLubyte *wosgl_GetString(GLenum name)        { return glGetString(name); }
-void wosgl_Flush(void)                             { glFlush(); }
-void wosgl_Finish(void)                            { glFinish(); }
+const GLubyte *wosgl_GetString(GLenum name)        { wosgl_gl_touched(); return glGetString(name); }
+void wosgl_Flush(void)                             { wosgl_gl_touched(); glFlush(); }
+void wosgl_Finish(void)                            { wosgl_gl_touched(); glFinish(); }
 
 void wosgl_NoNeedMulConstColor(short flag)         { s_no_need_mul = flag; }
 void wosgl_Color4Lcol(unsigned int lcol)
@@ -798,10 +798,63 @@ typedef struct {
     int    scale2;          /* the stage scales by 2 */
 } WosPass;
 
-static void set_blend_abr(void)
+/* The GL state a pass draws with: primitives with the same key go into one
+ * glBegin/glEnd (MiniGL's cost is mostly per glEnd, some 17 us). */
+typedef struct {
+    GLuint tex;             /* 0: untextured */
+    int    scale2;
+    int    blend;           /* 0: alpha; 1-4: the PSX mode */
+    GLenum zfunc;
+} WosKey;
+
+static struct {
+    int    open;            /* a glBegin(GL_TRIANGLES) is open */
+    int    n;               /* vertices in it */
+    WosKey key;
+} s_bt;
+static int s_batching = -1;  /* SetEnv WSX_GLBATCH 0: a glBegin per primitive */
+#define BATCH_MAX 3000      /* MiniGL takes 8192 vertices */
+
+/* The GL state the draws last set, to leave out calls that change nothing
+ * (MiniGL serializes every one; Tekken 3 made some 5300 a frame). Anything
+ * else that touches GL forgets it (wosgl_gl_touched). */
+static struct {
+    int    valid;
+    int    blend;           /* the WosKey blend; -1 unknown */
+    GLenum zfunc;
+    GLuint tex;             /* 0: texturing off */
+    int    scale2;
+} s_gs;
+
+static void batch_close(void);
+
+/* Everything but a draw that touches GL ends the open batch first, and
+ * the state the draws set is no longer known. */
+void wosgl_gl_touched(void)
+{
+    batch_close();
+    s_gs.valid = 0;
+}
+
+void wosgl_batch_end(void)
+{
+    batch_close();
+}
+
+static void batch_close(void)
+{
+    if (s_bt.open) {
+        uint32_t t0 = wos_tb_lo();
+        s_bt.open = 0;
+        glEnd();
+        wos_prof_ticks[WOS_PROF_GLEND] += wos_tb_lo() - t0;
+    }
+}
+
+static void set_blend_abr(int abr)
 {
     glEnable(GL_BLEND);
-    switch (s_abr) {
+    switch (abr) {
     case 1:  glBlendFunc(GL_ONE, GL_SRC_ALPHA); break;          /* 0.5B + 0.5F */
     case 3:
         if (s_has_rsub) {
@@ -827,7 +880,7 @@ static void set_blend_alpha(void)
 
 /* _ogx_apply_state: 0 when this pass draws nothing. pass 0 is the first (and,
  * blending off or untextured, the only) pass; pass 1 the PSX-blend pass. */
-static int apply_state(int texen, int color_enabled, int pass, WosPass *ps)
+static int compute_state(int texen, int color_enabled, int pass, WosPass *ps, WosKey *k)
 {
     WosTex *t = &s_tex[s_cur];
     int abr_pass;
@@ -844,17 +897,17 @@ static int apply_state(int texen, int color_enabled, int pass, WosPass *ps)
             if (!(s_tex_semi_type & TEX_TYPE_1) || !t->semi)
                 return 0;
             ps->tex = t->semi;
-            set_blend_alpha();
+            k->blend = 0;
             abr_pass = 0;
         } else {
             if (!(s_tex_semi_type & TEX_TYPE_2) || !t->main)
                 return 0;
             ps->tex = t->main;
             if (s_blend_enabled) {
-                set_blend_abr();
+                k->blend = s_abr ? s_abr : 2;
                 abr_pass = 1;
             } else {
-                set_blend_alpha();
+                k->blend = 0;
                 abr_pass = 0;
             }
         }
@@ -883,28 +936,49 @@ static int apply_state(int texen, int color_enabled, int pass, WosPass *ps)
         if (pass != 0)
             return 0;
         if (s_blend_enabled) {
-            set_blend_abr();
+            k->blend = s_abr ? s_abr : 2;
             if (s_abr == 1)      { ps->factor = 0.5f;  ps->alpha = 0.5f; }
             else if (s_abr == 4) { ps->factor = 0.25f; }
         } else {
-            set_blend_alpha();
+            k->blend = 0;
         }
         ps->col5to8 = !color_enabled;
     }
 
-    glDepthFunc(s_zfunc);
-    if (ps->tex) {
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, ps->tex);
-        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-        if (s_has_scale2)
-            glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE, ps->scale2 ? 2.0f : 1.0f);
-    } else {
+    k->zfunc = s_zfunc;
+    k->tex = ps->tex;
+    k->scale2 = ps->tex && s_has_scale2 ? ps->scale2 : 0;
+    return 1;
+}
+
+/* The GL state for a key: only what differs from the last. */
+static void apply_key(const WosKey *k)
+{
+    if (!s_gs.valid || s_gs.blend != k->blend) {
+        if (k->blend)
+            set_blend_abr(k->blend);
+        else
+            set_blend_alpha();
+    }
+    if (!s_gs.valid || s_gs.zfunc != k->zfunc)
+        glDepthFunc(k->zfunc);
+    if (k->tex) {
+        if (!s_gs.valid || !s_gs.tex) {
+            glEnable(GL_TEXTURE_2D);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+        }
+        if (!s_gs.valid || s_gs.tex != k->tex)
+            glBindTexture(GL_TEXTURE_2D, k->tex);
+        if (s_has_scale2 && (!s_gs.valid || !s_gs.tex || s_gs.scale2 != k->scale2))
+            glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE, k->scale2 ? 2.0f : 1.0f);
+    } else if (!s_gs.valid || s_gs.tex) {
         glDisable(GL_TEXTURE_2D);
     }
-    if (ogx_draw_submitted_cb)
-        ogx_draw_submitted_cb();
-    return 1;
+    s_gs.valid = 1;
+    s_gs.blend = k->blend;
+    s_gs.zfunc = k->zfunc;
+    s_gs.tex = k->tex;
+    s_gs.scale2 = k->scale2;
 }
 
 static inline float clamp1(float v) { return v > 1.0f ? 1.0f : v; }
@@ -928,42 +1002,60 @@ static void emit_color(const WosPass *ps, const GLubyte *c)
     glColor4f(r, g, b, ps->alpha);
 }
 
-/* Draw `n` of the primitive's vertices, in `order`, as `mode`. */
+/* Draw `n` of the primitive's vertices, in `order`, as `mode`: a strip of
+ * 4 goes in as two triangles, so that primitives can share a glBegin. */
 static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
                  int texen, int color_enabled, int one_color)
 {
+    static const int TRI1[3] = { 0, 1, 2 }, TRI2[6] = { 0, 1, 2, 2, 1, 3 };
     WosPass ps;
+    WosKey key;
     int pass, i;
     int passes = (texen && s_blend_enabled) ? 2 : 1;
     float ss = 1.0f, ts = 1.0f;
     const WosTex *bt = &s_tex[s_cur];
+    const int *tri = (mode == GL_TRIANGLE_STRIP && n == 4) ? TRI2 : TRI1;
+    int nt = (mode == GL_TRIANGLE_STRIP && n == 4) ? 6 : 3;
 
+    if (s_batching < 0)
+        s_batching = wos_env_int("WSX_GLBATCH", 1);
     if (texen && bt->pw > 0 && bt->ph > 0 && (bt->pw != bt->w || bt->ph != bt->h)) {
         ss = (float)bt->w / (float)bt->pw;
         ts = (float)bt->h / (float)bt->ph;
     }
 
     for (pass = 0; pass < passes; pass++) {
-        int ok;
         uint32_t t0 = wos_tb_lo(), t1;
-        ok = apply_state(texen, color_enabled, pass, &ps);
+        if (!compute_state(texen, color_enabled, pass, &ps, &key))
+            continue;
+        if (!s_bt.open || !s_batching || s_bt.n + nt > BATCH_MAX ||
+            memcmp(&key, &s_bt.key, sizeof key)) {
+            wosgl_batch_end();
+            t0 = wos_tb_lo();
+            apply_key(&key);
+            wos_draws++;
+            glBegin(GL_TRIANGLES);
+            s_bt.open = 1;
+            s_bt.n = 0;
+            s_bt.key = key;
+        }
+        if (ogx_draw_submitted_cb)
+            ogx_draw_submitted_cb();
         t1 = wos_tb_lo();
         wos_prof_ticks[WOS_PROF_STATE] += t1 - t0;
-        if (!ok)
-            continue;
-        wos_draws++;
-        glBegin(mode);
         if (!color_enabled || one_color)
             emit_color(&ps, color_enabled ? v[order[0]].c : s_lcol);
-        for (i = 0; i < n; i++) {
-            const WosVtx *p = &v[order[i]];
+        for (i = 0; i < nt; i++) {
+            const WosVtx *p = &v[order[tri[i]]];
             if (color_enabled && !one_color)
                 emit_color(&ps, p->c);
             if (texen)
                 glTexCoord2f(p->s * ss, p->t * ts);
             glVertex3f(p->x, p->y, p->z);
         }
-        glEnd();
+        s_bt.n += nt;
+        if (!s_batching)
+            wosgl_batch_end();
         wos_prof_ticks[WOS_PROF_DRAW] += wos_tb_lo() - t1;
     }
 }

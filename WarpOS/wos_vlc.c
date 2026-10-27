@@ -946,3 +946,58 @@ u32 wos_randwait_run(u32 budget)
     psxRegs.pc = flag ? s_rw_pc + 4 * RW_LOOP : s_rw_pc;
     return n;
 }
+
+/* libgpu's queue dispatch (called while DrawOTag's queue is full): it
+ * returns at once while DMA2 (GPU) is busy, and only the DMA's end, an
+ * event, clears that. A busy call made again right after one from the same
+ * caller lets the time run on to the next event; the rounds between would
+ * only find it busy again (and count libgpu's timeout up). */
+static const u32 s_gq_ref[] = {
+    0x3c020000, 0x8c420000, 0x27bdffe0, 0xafbf0018, 0xafb10014, 0xafb00010,
+    0x8c420000, 0x3c100100, 0x00501024, 0x14400000, 0x24020001,
+};
+#define GQ_NWORDS (sizeof s_gq_ref / 4)
+static u32 s_gq_chcr_ptr, s_gq_ra, s_gq_cycle;
+static int s_gq_busy;
+unsigned int wos_gq_polls, wos_gq_skips;
+
+int wos_gpuqueue_match(u32 pc)
+{
+    u32 w[GQ_NWORDS];
+    unsigned i;
+
+    if ((pc & 3) || !PSXM(pc) || !PSXM(pc + 4 * GQ_NWORDS - 4) || code_at(pc) >> 16 != 0x3c02)
+        return 0;
+    for (i = 0; i < GQ_NWORDS; i++) {
+        u32 m = (i == 0 || i == 1 || i == 9) ? 0xffff0000 : ~0u;
+        w[i] = code_at(pc + 4 * i);
+        if ((w[i] & m) != s_gq_ref[i])
+            return 0;
+    }
+    s_gq_chcr_ptr = pair_addr(w, 0);
+    s_gq_busy = 0;
+    return 1;
+}
+
+/* The block at its entry calls this first. */
+void wos_gpuqueue_poll(void)
+{
+    u8 *pp = PSXM(s_gq_chcr_ptr);
+    u32 ra = psxRegs.GPR.r[31], c = psxRegs.cycle;
+
+    wos_gq_polls++;
+    if (!pp || LOAD_SWAP32p(pp) != 0x1f8010a8)
+        return;
+    if (!(psxHu32(0x10a8) & 0x01000000)) {
+        s_gq_busy = 0;          /* idle: it starts the next draw */
+        return;
+    }
+    if (s_gq_busy && ra == s_gq_ra && c - s_gq_cycle < 8192 && !wos_noidle &&
+        (s32)(wos_next_event - c) > 0) {
+        psxRegs.cycle = c = wos_next_event;
+        wos_gq_skips++;
+    }
+    s_gq_busy = 1;
+    s_gq_ra = ra;
+    s_gq_cycle = c;
+}

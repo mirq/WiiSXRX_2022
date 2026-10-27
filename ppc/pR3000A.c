@@ -691,10 +691,99 @@ static void iFlushRegs(u32 nextpc) {
 	}
 }
 
+#ifdef __WARPOS__
+/* The block-to-block dispatcher, emitted at the start of the code buffer
+ * (recReset): a block ends by branching here instead of returning through
+ * recRun (18 registers stored and loaded again for every block, some
+ * 60000 times a frame). It jumps to the next block's code when there is
+ * some, and goes back to execute() to compile, to stop, or when the
+ * I-cache was flushed. SetEnv WSX_DISPATCH 0: back to execute() always. */
+static u32 wos_dispatch;
+
+static void wos_emit_exit(void)
+{
+	if (((u32)returnPC & 0x1fffffc) == (u32)returnPC) {
+		BA((u32)returnPC);
+	} else {
+		LIW(0, (u32)returnPC);
+		MTLR(0);
+		BLR();
+	}
+}
+
+static void wos_emit_dispatch(void)
+{
+	u32 *x1, *x2, *x3, *x4;
+
+	wos_dispatch = 0;
+	if (!wos_env_int("WSX_DISPATCH", 1))
+		return;
+	wos_dispatch = (u32)ppcPtr;
+	LWZ(3, OFFSET(&psxRegs, &psxRegs.pc), 31);  /* recRun keeps &psxRegs in r31 */
+	LIW(4, (u32)&stop);
+	LWZ(4, 0, 4);
+	CMPLWI(4, 0);
+	BNE_L(x1);
+	LBZ(4, OFFSET(&psxRegs, &psxRegs.ICache_valid), 31);
+	CMPLWI(4, 0);
+	BEQ_L(x2);
+	RLWINM(4, 3, 18, 14, 29);       /* (pc >> 16) * 4 */
+	LIW(5, (u32)psxRecLUT);
+	LWZX(5, 5, 4);
+	CMPLWI(5, 0);
+	BEQ_L(x3);
+	RLWINM(4, 3, 0, 16, 31);        /* pc & 0xffff */
+	LWZX(6, 5, 4);
+	CMPLWI(6, 0);
+	BEQ_L(x4);
+	MTCTR(6);
+	BCTR();
+	B_DST(x1);
+	B_DST(x2);
+	B_DST(x3);
+	B_DST(x4);
+	wos_emit_exit();
+	wos_cache_flush_code((void *)wos_dispatch, (u32)ppcPtr - wos_dispatch);
+}
+#endif
+
+#ifdef __WARPOS__
+/* The end of a block: psxBranchTest only when an event is due (its gate,
+ * psxRegs.cycle against wos_next_event, done here instead of in a call some
+ * 36000 times a frame). A branch back keeps the call, for the idle-loop
+ * finder. SetEnv WSX_NOGATE 1: the call always, as before. */
+extern int wos_nogate;
+static void wos_emit_branch_test(int backward)
+{
+	u32 *skip;
+
+	FlushAllHWReg();
+	if (backward || wos_nogate) {
+		CALLFunc((u32)psxBranchTest);
+		return;
+	}
+	LWZ(3, OFFSET(&psxRegs, &psxRegs.cycle), 31);
+	LIW(4, (u32)&wos_next_event);
+	LWZ(4, 0, 4);
+	SUBF(3, 4, 3);                  /* cycle - next event */
+	CMPWI(3, 0);
+	BLT_L(skip);
+	CALLFunc((u32)psxBranchTest);
+	B_DST(skip);
+}
+#endif
+
 static void Return()
 {
 	iFlushRegs(0);
 	FlushAllHWReg();
+#ifdef __WARPOS__
+	if (wos_dispatch) {
+		s32 d = (s32)(wos_dispatch - (u32)ppcPtr);
+		INSTR = 0x48000000 | (d & 0x3fffffc);   /* b wos_dispatch */
+		return;
+	}
+#endif
 	if (((u32)returnPC & 0x1fffffc) == (u32)returnPC) {
 		BA((u32)returnPC);
 	}
@@ -784,8 +873,12 @@ static void SetBranch() {
 
 	count = (idlecyclecount + (pc - pcold) / 4) * cycleMult / 100;
         ADDI(PutHWRegSpecial(CYCLECOUNT), GetHWRegSpecial(CYCLECOUNT), count);
+#ifdef __WARPOS__
+	wos_emit_branch_test(0);
+#else
 	FlushAllHWReg();
 	CALLFunc((u32)psxBranchTest);
+#endif
 
 	// TODO: don't return if target is compiled
 	Return();
@@ -827,8 +920,12 @@ static void iJump(u32 branchPC) {
         //} else {
             ADDI(PutHWRegSpecial(CYCLECOUNT), GetHWRegSpecial(CYCLECOUNT), count);
         //}
+#ifdef __WARPOS__
+	wos_emit_branch_test(branchPC < pc);
+#else
 	FlushAllHWReg();
 	CALLFunc((u32)psxBranchTest);
+#endif
 
 //	if (!Config.HLE && Config.PsxOut &&
 //	    ((branchPC & 0x1fffff) == 0xa0 ||
@@ -909,8 +1006,12 @@ static void iBranch(u32 branchPC, int savectx) {
         //} else {
             ADDI(PutHWRegSpecial(CYCLECOUNT), GetHWRegSpecial(CYCLECOUNT), count);
         //}
+#ifdef __WARPOS__
+	wos_emit_branch_test(branchPC < pc);
+#else
 	FlushAllHWReg();
 	CALLFunc((u32)psxBranchTest);
+#endif
 
 	// always return for now...
 	//Return();
@@ -1168,6 +1269,9 @@ static void recReset() {
 
 	ppcInit();
 	ppcSetPtr((u32 *)recMem);
+#ifdef __WARPOS__
+	wos_emit_dispatch();
+#endif
 
 	branch = 0;
 	memset(iRegs, 0, sizeof(iRegs));
@@ -2222,6 +2326,97 @@ static void preMemWrite(int size)
 	//FlushAllHWReg();
 }
 
+/* Loads and stores to RAM in the translated code itself; the C accessor is
+ * called only for the hardware page and unmapped ones. preMemRead/Write
+ * have the address in r3 (and the value in r4) and nothing in r0-r12, so
+ * r11/r12 are free and both paths leave the same registers. A store also
+ * drops the translation of its word, as psxCpu->Clear does.
+ * SetEnv WSX_FASTMEM 0: every access through C, as before. */
+#ifdef __WARPOS__
+static int wos_fastmem = -1;
+
+static void wos_call_raw(u32 func)
+{
+	if ((func & 0x1fffffc) == func) {
+		BLA(func);
+	} else {
+		LIW(0, func);
+		MTCTR(0);
+		BCTRL();
+	}
+}
+
+static int wos_fast_on(void)
+{
+	if (wos_fastmem < 0)
+		wos_fastmem = wos_env_int("WSX_FASTMEM", 1);
+	return wos_fastmem;
+}
+
+/* page = (addr >> 16): r12 = its LUT entry, or a branch to slow1/slow2 */
+#define WOS_FAST_PAGE(lut, slow1, slow2, dst) \
+	RLWINM(12, 3, 16, 19, 31); \
+	CMPLWI(12, 0x1f80); \
+	BEQ_L(slow1); \
+	RLWINM(12, 3, 18, 14, 29); \
+	LIW(11, (u32)(lut)); \
+	LWZX(dst, 11, 12); \
+	CMPLWI(dst, 0); \
+	BEQ_L(slow2);
+
+static void wos_fast_read(int size, u32 func)
+{
+	u32 *slow1, *slow2, *done;
+
+	ReleaseArgs();
+	WOS_FAST_PAGE(psxMemRLUT, slow1, slow2, 12);
+	RLWINM(11, 3, 0, 16, 31);
+	if (size == 4)
+		LWBRX(3, 12, 11)
+	else if (size == 2)
+		LHBRX(3, 12, 11)
+	else
+		LBZX(3, 12, 11)
+	B_L(done);
+	B_DST(slow1);
+	B_DST(slow2);
+	wos_call_raw(func);
+	B_DST(done);
+}
+
+static void wos_fast_write(int size, u32 func)
+{
+	u32 *slow1, *slow2, *done;
+
+	ReleaseArgs();
+	WOS_FAST_PAGE(psxMemWLUT, slow1, slow2, 11);
+	RLWINM(0, 3, 0, 16, 31);
+	if (size == 4)
+		STWBRX(4, 11, 0)
+	else if (size == 2)
+		STHBRX(4, 11, 0)
+	else
+		STBX(4, 11, 0)
+	/* the translation of this word: psxRecLUT[page] + (addr & 0xfffc) */
+	LIW(11, (u32)psxRecLUT);
+	LWZX(11, 11, 12);
+	RLWINM(0, 3, 0, 16, 29);
+	LI(12, 0);
+	STWX(12, 11, 0);
+	B_L(done);
+	B_DST(slow1);
+	B_DST(slow2);
+	wos_call_raw(func);
+	B_DST(done);
+}
+
+#define WOS_MEM_READ(size, func) do { if (wos_fast_on()) wos_fast_read(size, (u32)func); else CALLFunc((u32)func); } while (0)
+#define WOS_MEM_WRITE(size, func) do { if (wos_fast_on()) wos_fast_write(size, (u32)func); else CALLFunc((u32)func); } while (0)
+#else
+#define WOS_MEM_READ(size, func) CALLFunc((u32)func)
+#define WOS_MEM_WRITE(size, func) CALLFunc((u32)func)
+#endif
+
 /* GPU reads, counted: a loop that reads hardware is not idle (WarpOS/wos_idle.c). */
 #ifdef __WARPOS__
 extern unsigned int wos_hw_reads;
@@ -2269,7 +2464,7 @@ static void recLB() {
     printFunctionLog();
     #endif // SHOW_DEBUG
 	preMemRead();
-	CALLFunc((u32)psxMemRead8);
+	WOS_MEM_READ(1, psxMemRead8);
 	if (_Rt_) {
 		EXTSB(PutHWReg32(_Rt_), GetHWRegSpecial(RETVAL));
 		DisposeHWReg(GetSpecialIndexFromHWRegs(RETVAL));
@@ -2311,7 +2506,7 @@ static void recLBU() {
     printFunctionLog();
     #endif // SHOW_DEBUG
 	preMemRead();
-	CALLFunc((u32)psxMemRead8);
+	WOS_MEM_READ(1, psxMemRead8);
 
 	if (_Rt_) {
 		SetDstCPUReg(3);
@@ -2356,7 +2551,7 @@ static void recLH() {
 	}
 
 	preMemRead();
-	CALLFunc((u32)psxMemRead16);
+	WOS_MEM_READ(2, psxMemRead16);
 	if (_Rt_) {
 		EXTSH(PutHWReg32(_Rt_), GetHWRegSpecial(RETVAL));
 		DisposeHWReg(GetSpecialIndexFromHWRegs(RETVAL));
@@ -2453,7 +2648,7 @@ static void recLHU() {
 	}
 
 	preMemRead();
-	CALLFunc((u32)psxMemRead16);
+	WOS_MEM_READ(2, psxMemRead16);
 	if (_Rt_) {
 		SetDstCPUReg(3);
 		PutHWReg32(_Rt_);
@@ -2547,7 +2742,7 @@ static void recLW() {
 	}
 
 	preMemRead();
-	CALLFunc((u32)psxMemRead32);
+	WOS_MEM_READ(4, psxMemRead32);
 	if (_Rt_) {
 		SetDstCPUReg(3);
 		PutHWReg32(_Rt_);
@@ -2592,7 +2787,7 @@ static void recSB() {
     printFunctionLog();
     #endif // SHOW_DEBUG
 	preMemWrite(1);
-	CALLFunc((u32)psxMemWrite8);
+	WOS_MEM_WRITE(1, psxMemWrite8);
 }
 
 //REC_FUNC(SH);
@@ -2643,7 +2838,7 @@ static void recSH() {
     printFunctionLog();
     #endif // SHOW_DEBUG
 	preMemWrite(2);
-	CALLFunc((u32)psxMemWrite16);
+	WOS_MEM_WRITE(2, psxMemWrite16);
 }
 
 //REC_FUNC(SW);
@@ -2723,7 +2918,7 @@ static void recSW() {
     printFunctionLog();
     #endif // SHOW_DEBUG
 	preMemWrite(4);
-	CALLFunc((u32)psxMemWrite32);
+	WOS_MEM_WRITE(4, psxMemWrite32);
 
 	//B_DST(b2);
 }
@@ -3529,6 +3724,8 @@ static void (*recCP2BSC[32])(struct psxCP2Regs *regs) = {
 #ifdef __WARPOS__
 int wos_vlc_match(u32 pc);
 int wos_stnext_match(u32 pc);
+int wos_gpuqueue_match(u32 pc);
+void wos_gpuqueue_poll(void);
 int wos_randwait_match(u32 pc);
 u32 wos_randwait_run(u32 budget);
 void wos_stnext_poll(void);
@@ -3688,8 +3885,13 @@ __inline static void recRecompile() {
 #ifdef __WARPOS__
 	/* PsyQ's StGetNext: a poll for a movie frame that will fail again
 	 * lets the time run on to the next event */
-	if (wos_stnext_match(pc))
+	if (wos_stnext_match(pc)) {
 		CALLFunc((u32)wos_stnext_poll);
+	}
+	/* libgpu's queue dispatch, called while DMA2 is busy, the same way */
+	else if (wos_gpuqueue_match(pc)) {
+		CALLFunc((u32)wos_gpuqueue_poll);
+	}
 #endif
 	//where did 500 come from?
 	for (count=0; count<500;) {
