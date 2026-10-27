@@ -82,8 +82,9 @@ as well. This is how `minigl_ppc.dll` was deployed.
 - Program drawer: `Work:WiiStation/`.
   - `WiiStation`
   - `WiiStation-R200` (the launch script)
-  - `minigl_ppc.dll`: from MiniGL branch `wiistation`, converted on the target
-    with `DH2:wosbuild/Elf2Exe2 <elf> <dll>`.
+  - `minigl_ppc.dll`: from MiniGL branch `wiistation`, converted on Linux with
+    `tools/elf2warpos/elf2warpos.py`. The Oct 21 DLL from `Work:SilentHill WOS`
+    is kept as `mgl_sh.dll`, its host as `mglhost_sh`.
   - `minigl_ppc_host`
   - `wiistation.cfg`
   - `bios/`, `memcards/`, `savestates/`
