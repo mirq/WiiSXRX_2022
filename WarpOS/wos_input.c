@@ -53,8 +53,13 @@ static void set_default_keys(void)
     s_keymap[0x40] = PSXB_SELECT;     /* SPACE */
 }
 
+/* Off by default, as quake3amiga's in_joystick: a ReadJoyPort is a 68k trip of
+ * about 5 ms on the A4000. SetEnv WSX_JOYPORTS 1 reads one port a frame. */
+static int s_joyports;
+
 void wos_input_init(void)
 {
+    s_joyports = wos_env_int("WSX_JOYPORTS", 0);
     set_default_keys();
     memset(s_keydown, 0, sizeof(s_keydown));
     memset(s_port_live, 0, sizeof(s_port_live));
@@ -174,8 +179,11 @@ unsigned wos_input_poll(void *window)
         }
     }
 
-    read_port(1, 0);
-    read_port(0, 1);
+    if (s_joyports) {
+        static unsigned turn;
+        if (++turn & 1) read_port(1, 0);
+        else            read_port(0, 1);
+    }
     return act;
 }
 

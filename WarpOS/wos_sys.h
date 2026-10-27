@@ -26,6 +26,24 @@ void     wos_cache_invalidate_data(void *start, uint32_t len);
 /* The log: collected in memory, written every 2 s and at exit. */
 void     wos_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void     wos_log_flush(void);
+/* Where a frame's time goes: time-base ticks per stage, read without leaving
+ * the PPC; the stats line turns them into us per frame and clears them. */
+enum { WOS_PROF_GPU, WOS_PROF_SPU, WOS_PROF_LACE, WOS_PROF_CDR, WOS_PROF_MDEC, WOS_PROF_RCNT, WOS_PROF_IRQ, WOS_PROF_GP1, WOS_PROF_READ, WOS_PROF_TEXCONV, WOS_PROF_TEXUP, WOS_PROF_UPSCREEN, WOS_PROF_N };
+extern uint32_t wos_prof_reads;
+extern uint32_t wos_prof_ticks[WOS_PROF_N];
+static inline uint32_t wos_tb_lo(void)
+{
+    uint32_t lo;
+    __asm__ volatile("mftb %0" : "=r"(lo));
+    return lo;
+}
+#define WOS_PROF(i, stmt) do { uint32_t _t0 = wos_tb_lo(); stmt; wos_prof_ticks[i] += wos_tb_lo() - _t0; } while (0)
+uint32_t wos_tb_hz(void);
+/* Where the PSX spends its time: psxBranchTest hands in the pc and the time
+ * base; the time since the previous call is charged to the previous pc. */
+void wos_pc_sample(uint32_t pc, uint32_t tb);
+void wos_pc_report(void);
+
 /* Bring-up breadcrumbs: [0] the last site passed, [1] the frame, [2] the PSX
  * pc at the last vblank or watchdog look, [3] a site's own value. The line is
  * pushed to memory at every write, so the bridge can read it from the 68k

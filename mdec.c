@@ -18,6 +18,9 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02111-1307 USA.           *
  ***************************************************************************/
 
+#ifdef __WARPOS__
+#include "WarpOS/wos_sys.h"
+#endif
 #include "mdec.h"
 
 /* memory speed is 1 byte per MDEC_BIAS psx clock
@@ -561,7 +564,15 @@ void mdec0Interrupt()
 #define SIZE_OF_24B_BLOCK (16*16*3)
 #define SIZE_OF_16B_BLOCK (16*16*2)
 
+#ifdef __WARPOS__
+static void psxDma1_decode(u32 adr, u32 bcr, u32 chcr);
 void psxDma1(u32 adr, u32 bcr, u32 chcr) {
+	WOS_PROF(WOS_PROF_MDEC, psxDma1_decode(adr, bcr, chcr));
+}
+static void psxDma1_decode(u32 adr, u32 bcr, u32 chcr) {
+#else
+void psxDma1(u32 adr, u32 bcr, u32 chcr) {
+#endif
 	u32 words, words_max = 0;
 	int blk[DSIZE2 * 6];
 	u8 * image;

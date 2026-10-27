@@ -94,6 +94,72 @@ uint64_t wos_now_us(void)
     return s_us;
 }
 
+uint32_t wos_prof_ticks[WOS_PROF_N];
+uint32_t wos_prof_reads;
+
+#define PC_SLOTS 1024
+static struct { uint32_t pc, ticks; } s_pc_hist[PC_SLOTS];
+static uint32_t s_pc_last, s_tb_prev;
+
+void wos_pc_sample(uint32_t pc, uint32_t tb)
+{
+    uint32_t h, i;
+    if (s_tb_prev && s_pc_last) {
+        uint32_t d = tb - s_tb_prev;
+        h = (s_pc_last >> 2) * 2654435761u >> 22;      /* 10 bits */
+        for (i = 0; i < 8; i++, h = (h + 1) & (PC_SLOTS - 1)) {
+            if (s_pc_hist[h].pc == s_pc_last || !s_pc_hist[h].pc) {
+                s_pc_hist[h].pc = s_pc_last;
+                s_pc_hist[h].ticks += d;
+                break;
+            }
+        }
+    }
+    s_pc_last = pc;
+    s_tb_prev = tb;
+}
+
+/* The eight pcs with the most time, as a share of all, then start again. */
+void wos_pc_report(void)
+{
+    uint64_t total = 0;
+    int top[8], n, i, j;
+    char line[400];
+    int len;
+
+    for (i = 0; i < PC_SLOTS; i++)
+        total += s_pc_hist[i].ticks;
+    if (!total)
+        return;
+    for (n = 0; n < 8; n++) {
+        int best = -1;
+        for (i = 0; i < PC_SLOTS; i++) {
+            for (j = 0; j < n; j++)
+                if (top[j] == i)
+                    break;
+            if (j < n || !s_pc_hist[i].ticks)
+                continue;
+            if (best < 0 || s_pc_hist[i].ticks > s_pc_hist[best].ticks)
+                best = i;
+        }
+        if (best < 0)
+            break;
+        top[n] = best;
+    }
+    len = snprintf(line, sizeof line, "[pcs]");
+    for (i = 0; i < n && len < (int)sizeof line - 24; i++)
+        len += snprintf(line + len, sizeof line - len, " %08lx %lu%%",
+                        (unsigned long)s_pc_hist[top[i]].pc,
+                        (unsigned long)((uint64_t)s_pc_hist[top[i]].ticks * 100 / total));
+    wos_log("%s", line);
+    memset(s_pc_hist, 0, sizeof s_pc_hist);
+}
+
+uint32_t wos_tb_hz(void)
+{
+    return (uint32_t)s_tb_hz;
+}
+
 void wos_wait_until_us(uint64_t t)
 {
     while (wos_now_us() < t)

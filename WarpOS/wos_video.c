@@ -262,6 +262,27 @@ void wos_video_frame_stats(void)
     span = now - s_stat_start_us;
     if (span) {
         unsigned long fps100 = (unsigned long)((uint64_t)s_stat_frames * 100000000u / span);
+        uint64_t per = (uint64_t)wos_tb_hz() / 1000000u * s_stat_frames;
+        int i;
+        unsigned long st[WOS_PROF_N];
+        for (i = 0; i < WOS_PROF_N; i++) {
+            st[i] = per ? (unsigned long)(wos_prof_ticks[i] / per) : 0;
+            wos_prof_ticks[i] = 0;
+        }
+        wos_pc_report();
+        /* rcnt holds lace and spu; irq holds cd */
+        wos_log("[prof] us per frame %lu: gpu %lu, rcnt %lu (lace/present %lu, spu %lu), irq %lu (cd read %lu), mdec %lu, the rest (cpu) %lu",
+                (unsigned long)(span / s_stat_frames), st[WOS_PROF_GPU], st[WOS_PROF_RCNT],
+                st[WOS_PROF_LACE], st[WOS_PROF_SPU], st[WOS_PROF_IRQ], st[WOS_PROF_CDR],
+                st[WOS_PROF_MDEC],
+                (unsigned long)(span / s_stat_frames) - st[WOS_PROF_GPU] - st[WOS_PROF_RCNT]
+                    - st[WOS_PROF_IRQ] - st[WOS_PROF_MDEC] - st[WOS_PROF_GP1]);
+        wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us",
+                st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xffff),
+                st[WOS_PROF_TEXCONV], st[WOS_PROF_TEXUP]);
+        wos_log("[prof] UploadScreen %lu us, %lu textures made", st[WOS_PROF_UPSCREEN],
+                (unsigned long)(wos_prof_reads >> 16));
+        wos_prof_reads = 0;
         wos_log("[stats] %lu.%02lu fps, %lu presents, %lu late; per frame: upload %lu us, swap %lu us, wait %lu us",
                 fps100 / 100, fps100 % 100,
                 (unsigned long)s_stat_presents, (unsigned long)s_stat_late,

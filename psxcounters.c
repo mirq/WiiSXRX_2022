@@ -410,7 +410,11 @@ void psxRcntUpdate()
 #ifdef __WARPOS__
             WOS_CRUMB(72);
 #endif
+#ifdef __WARPOS__
+            WOS_PROF(WOS_PROF_LACE, gpuPtr->updateLace());
+#else
             gpuPtr->updateLace();
+#endif
 #ifdef __WARPOS__
             WOS_CRUMB(73);
 #endif
@@ -473,7 +477,11 @@ void psxRcntUpdate()
 #ifdef __WARPOS__
         WOS_CRUMB(70);
 #endif
+#ifdef __WARPOS__
+        WOS_PROF(WOS_PROF_SPU, SPU_async(cycle, 1, Config.PsxType));
+#else
         SPU_async(cycle, 1, Config.PsxType);
+#endif
 #ifdef __WARPOS__
         WOS_CRUMB(71);
 #endif

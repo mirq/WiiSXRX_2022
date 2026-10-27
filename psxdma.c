@@ -20,6 +20,9 @@
 /*
 * Handles PSX DMA functions.
 */
+#ifdef __WARPOS__
+#include "WarpOS/wos_sys.h"
+#endif
 #include <stdbool.h>
 #include "Gamecube/DEBUG.h"
 #include "psxdma.h"
@@ -156,7 +159,11 @@ void psxDma2(u32 madr, u32 bcr, u32 chcr) { // GPU
 				//log_unhandled("bad dma2 madr %x bcr %x\n", madr, bcr);
 				words_copy = words_max;
 			}
+#ifdef __WARPOS__
+			WOS_PROF(WOS_PROF_GPU, gpuPtr->readDataMem(ptr, words_copy));
+#else
 			gpuPtr->readDataMem(ptr, words_copy);
+#endif
 			psxCpu->Clear(madr, words_copy);
 
 			//HW_DMA2_MADR = SWAPu32(madr + words_copy * 4);
@@ -178,7 +185,11 @@ void psxDma2(u32 madr, u32 bcr, u32 chcr) { // GPU
 					break;
 				}
 				words_copy = min(words_left, words_max);
+#ifdef __WARPOS__
+				WOS_PROF(WOS_PROF_GPU, gpuPtr->writeDataMem(ptr, words_copy));
+#else
 				gpuPtr->writeDataMem(ptr, words_copy);
+#endif
 				words_left -= words_copy;
 				madr += words_copy * 4;
 			}
@@ -201,8 +212,14 @@ void psxDma2(u32 madr, u32 bcr, u32 chcr) { // GPU
 			do_walking = Config.hacks.gpu_slow_list_walking;
 			madr_next_p = do_walking ? &madr_next : NULL;
 
+#ifdef __WARPOS__
+			{ uint32_t _t0 = wos_tb_lo();
+#endif
 			cycles_sum = gpuPtr->dmaChain((u32 *)psxM, madr & 0x1fffff,
 					madr_next_p, &cycles_last_cmd);
+#ifdef __WARPOS__
+			wos_prof_ticks[WOS_PROF_GPU] += wos_tb_lo() - _t0; }
+#endif
 			// Old Soft Gpu check
 			if (gpuPtr != &newSoftGpu)
 			{
@@ -239,8 +256,14 @@ void gpuInterrupt() {
 		s32 cycles_last_cmd = 0;
 		long cycles_sum;
 
+#ifdef __WARPOS__
+		{ uint32_t _t0 = wos_tb_lo();
+#endif
 		cycles_sum = gpuPtr->dmaChain((u32 *)psxM, madr & 0x1fffff,
 				&madr_next, &cycles_last_cmd);
+#ifdef __WARPOS__
+		wos_prof_ticks[WOS_PROF_GPU] += wos_tb_lo() - _t0; }
+#endif
 		HW_DMA2_MADR = SWAPu32(madr_next);
 		if ((s32)(psxRegs.gpuIdleAfter - psxRegs.cycle) > 0)
 			cycles_sum += psxRegs.gpuIdleAfter - psxRegs.cycle;

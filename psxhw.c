@@ -397,8 +397,16 @@ void psxHwWrite32(u32 add, u32 value) {
         case 0x10ec: DmaExec(0x10e8, 0x10e4, 0x10e0, 6); return;
         case 0x10f4: psxHwWriteDmaIcr32(value); return;
 
+#ifdef __WARPOS__
+        case 0x1810: WOS_PROF(WOS_PROF_GPU, gpuPtr->writeData(value)); return;
+#else
         case 0x1810: gpuPtr->writeData(value); return;
+#endif
+#ifdef __WARPOS__
+        case 0x1814: WOS_PROF(WOS_PROF_GP1, psxHwWriteGpuSR(value)); return;
+#else
         case 0x1814: psxHwWriteGpuSR(value); return;
+#endif
         case 0x1820: mdecWrite0(value); break;
         case 0x1824: mdecWrite1(value); break;
 

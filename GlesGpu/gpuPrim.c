@@ -37,6 +37,9 @@
 #include "../gpulib/gpu.h"
 #include "../Gamecube/DEBUG.h"
 #include "../database.h"
+#ifdef __WARPOS__
+#include "../WarpOS/wos_sys.h"
+#endif
 
 ////////////////////////////////////////////////////////////////////////
 // defines
@@ -1643,7 +1646,18 @@ static short clearMovieGarbageX1 = 0;
 static short clearMovieGarbageY0 = 0;
 static short clearMovieGarbageY1 = 0;
 
+#ifdef __WARPOS__
+static int UploadScreen_ ( int Position );
 int UploadScreen ( int Position )
+{
+    int r;
+    WOS_PROF(WOS_PROF_UPSCREEN, r = UploadScreen_(Position));
+    return r;
+}
+static int UploadScreen_ ( int Position )
+#else
+int UploadScreen ( int Position )
+#endif
 {
     short x, y, YStep, XStep, U, s, UStep, ux[4], vy[4];
     short xa, xb, ya, yb;

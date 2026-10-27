@@ -61,11 +61,31 @@
 
 #define MAX_TEX 2048
 
+/* Planes of another size the texture had before. GlesGpu reuses one name
+ * for differently sized uploads (the movie's 256- and 64-wide tiles), and a
+ * glTexImage2D costs MiniGL about 90 ms: a size seen again is filled with
+ * glTexSubImage2D instead. */
+#define TEX_SPARES 3
+typedef struct {
+    int    w, h, fmt;
+    int    pw, ph;          /* the planes' real size (see FMT_565) */
+    GLuint main, semi;
+} WosPlanes;
+
+/* A plane's texel format. Movies (24-bit displays) have no transparency and
+ * go up as RGB565, in planes padded to a power of two: only a power-of-two
+ * texture with a retained shadow takes MiniGL's direct subimage path (a
+ * 256x208 tile cost ~130 ms on the shared path, which copies on the 68k). The
+ * draws scale the texture coordinates by the used part. */
+enum { FMT_BGRA, FMT_565 };
+
 typedef struct {
     int    used;
     GLuint main, semi;      /* MiniGL names; 0 = not created */
-    int    w, h;
+    int    w, h, fmt;
+    int    pw, ph;          /* the planes' real size: w, h but for padded 565 */
     GLint  wraps, wrapt;
+    WosPlanes spare[TEX_SPARES];  /* [0] the most recent */
 } WosTex;
 
 static WosTex s_tex[MAX_TEX];
@@ -164,7 +184,13 @@ static GLint wrap_conv(GLint p)
 }
 
 /* A MiniGL texture of w x h, its texels from bgra (or black). */
+static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra, int fmt);
 static GLuint make_plane(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra)
+{
+    return make_plane_fmt(w, h, wraps, wrapt, bgra, FMT_BGRA);
+}
+
+static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra, int fmt)
 {
     GLuint name = 0;
     GLint f = filter_for();
@@ -180,16 +206,81 @@ static GLuint make_plane(int w, int h, GLint wraps, GLint wrapt, const GLubyte *
         memset(s_conv_semi, 0, (size_t)w * h * 4);
         bgra = s_conv_semi;
     }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, bgra);
+    if (fmt == FMT_565)
+        WOS_PROF(WOS_PROF_TEXUP, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, bgra));
+    else
+        WOS_PROF(WOS_PROF_TEXUP, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, bgra));
+    wos_prof_reads += 0x10000;      /* texture creations, in the high half */
     return name;
 }
 
 static void free_planes(WosTex *t)
 {
+    int i;
     if (t->main) glDeleteTextures(1, &t->main);
     if (t->semi) glDeleteTextures(1, &t->semi);
     t->main = t->semi = 0;
     t->w = t->h = 0;
+    for (i = 0; i < TEX_SPARES; i++) {
+        if (t->spare[i].main) glDeleteTextures(1, &t->spare[i].main);
+        if (t->spare[i].semi) glDeleteTextures(1, &t->spare[i].semi);
+    }
+    memset(t->spare, 0, sizeof t->spare);
+}
+
+static void set_plane_params(GLuint name, WosTex *t)
+{
+    GLint f = filter_for();
+    glBindTexture(GL_TEXTURE_2D, name);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, t->wraps);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, t->wrapt);
+}
+
+/* Make the planes w x h: the spare of that size if there is one (1), else
+ * none yet (0) -- the caller creates them. The old planes become a spare. */
+static int switch_planes(WosTex *t, int w, int h, int fmt)
+{
+    WosPlanes cur, found;
+    int i, k = -1;
+
+    if (t->main && t->w == w && t->h == h && t->fmt == fmt)
+        return 1;
+    for (i = 0; i < TEX_SPARES; i++)
+        if (t->spare[i].main && t->spare[i].w == w && t->spare[i].h == h && t->spare[i].fmt == fmt) {
+            k = i;
+            break;
+        }
+    cur.w = t->w; cur.h = t->h; cur.fmt = t->fmt; cur.main = t->main; cur.semi = t->semi;
+    cur.pw = t->pw; cur.ph = t->ph;
+    memset(&found, 0, sizeof found);
+    if (k >= 0) {
+        found = t->spare[k];
+        for (i = k; i < TEX_SPARES - 1; i++)
+            t->spare[i] = t->spare[i + 1];
+        memset(&t->spare[TEX_SPARES - 1], 0, sizeof t->spare[0]);
+    }
+    if (cur.main) {
+        WosPlanes *last = &t->spare[TEX_SPARES - 1];
+        if (last->main) glDeleteTextures(1, &last->main);
+        if (last->semi) glDeleteTextures(1, &last->semi);
+        memmove(&t->spare[1], &t->spare[0], sizeof t->spare[0] * (TEX_SPARES - 1));
+        t->spare[0] = cur;
+    }
+    t->main = found.main;
+    t->semi = found.semi;
+    t->w = k >= 0 ? w : 0;
+    t->h = k >= 0 ? h : 0;
+    t->pw = k >= 0 ? found.pw : 0;
+    t->ph = k >= 0 ? found.ph : 0;
+    t->fmt = fmt;
+    if (k < 0)
+        return 0;
+    set_plane_params(t->main, t);
+    if (t->semi)
+        set_plane_params(t->semi, t);
+    return 1;
 }
 
 static inline void put_bgra(GLubyte *d, unsigned v, GLubyte a)
@@ -297,6 +388,21 @@ void wosgl_TexEnvf(GLenum target, GLenum pname, GLfloat param)
     (void)target; (void)pname; (void)param;   /* the draws set the stage */
 }
 
+/* GlesGpu's 1555 texels (in the low half of each word) as RGB565. */
+static void to_565(const GLubyte *src, int pitch, int w, int h)
+{
+    uint16_t *d = (uint16_t *)s_conv_main;
+    int x, y;
+    for (y = 0; y < h; y++) {
+        const GLubyte *p = src + (size_t)y * pitch * 4;
+        for (x = 0; x < w; x++, p += 4) {
+            unsigned v = ((unsigned)p[2] << 8) | p[3];
+            unsigned r = v & 31, g = (v >> 5) & 31, b = (v >> 10) & 31;
+            *d++ = (uint16_t)((r << 11) | (g << 6) | ((g >> 4) << 5) | b);
+        }
+    }
+}
+
 /* Replace the bound texture's planes with w x h texels. */
 static int define_texture(int w, int h, const void *data, int rgb24)
 {
@@ -305,23 +411,45 @@ static int define_texture(int w, int h, const void *data, int rgb24)
 
     if (!s_cur || !t->used || w <= 0 || h <= 0 || !ensure_conv(w * h))
         return 0;
-    type = split_texels((const GLubyte *)data, w, w, h, rgb24);
+    if (rgb24) {
+        WOS_PROF(WOS_PROF_TEXCONV, to_565((const GLubyte *)data, w, w, h));
+        if (!switch_planes(t, w, h, FMT_565)) {
+            int pw = 1, ph = 1;
+            while (pw < w) pw <<= 1;
+            while (ph < h) ph <<= 1;
+            /* Black, then one full-image subimage: that starts the shadow
+             * the direct path needs. The texels follow below. */
+            if (!ensure_conv(pw * ph))
+                return 0;
+            memset(s_conv_semi, 0, (size_t)pw * ph * 2);
+            t->main = make_plane_fmt(pw, ph, t->wraps, t->wrapt, s_conv_semi, FMT_565);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, pw, ph, GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, s_conv_semi);
+            t->w = w;
+            t->h = h;
+            t->pw = pw;
+            t->ph = ph;
+            WOS_PROF(WOS_PROF_TEXCONV, to_565((const GLubyte *)data, w, w, h));
+        }
+        glBindTexture(GL_TEXTURE_2D, t->main);
+        WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, s_conv_main));
+        return TEX_TYPE_2;
+    }
+    WOS_PROF(WOS_PROF_TEXCONV, type = split_texels((const GLubyte *)data, w, w, h, rgb24));
 
-    if (t->w != w || t->h != h || !t->main) {
-        free_planes(t);
+    if (!switch_planes(t, w, h, FMT_BGRA)) {
         t->main = make_plane(w, h, t->wraps, t->wrapt, s_conv_main);
-        t->w = w;
-        t->h = h;
+        t->w = t->pw = w;
+        t->h = t->ph = h;
     } else {
         glBindTexture(GL_TEXTURE_2D, t->main);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main);
+        WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main));
     }
     if (type & TEX_TYPE_1) {
         if (!t->semi)
             t->semi = make_plane(w, h, t->wraps, t->wrapt, s_conv_semi);
         else {
             glBindTexture(GL_TEXTURE_2D, t->semi);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi);
+            WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi));
         }
     }
     return type;
@@ -358,16 +486,23 @@ int wosgl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
         if (yoffset + ch > t->h) ch = t->h - yoffset;
         if (cw <= 0 || ch <= 0 || !ensure_conv(cw * ch))
             return 0;
-        tt = split_texels((const GLubyte *)data, width, cw, ch, 0);
+        if (t->fmt == FMT_565) {
+            WOS_PROF(WOS_PROF_TEXCONV, to_565((const GLubyte *)data, width, cw, ch));
+            glBindTexture(GL_TEXTURE_2D, t->main);
+            WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
+                            GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, s_conv_main));
+            return TEX_TYPE_2;
+        }
+        WOS_PROF(WOS_PROF_TEXCONV, tt = split_texels((const GLubyte *)data, width, cw, ch, 0));
         glBindTexture(GL_TEXTURE_2D, t->main);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
-                        MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main);
+        WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
+                        MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main));
         if ((tt & TEX_TYPE_1) && !t->semi)
             t->semi = make_plane(t->w, t->h, t->wraps, t->wrapt, NULL);
         if (t->semi) {
             glBindTexture(GL_TEXTURE_2D, t->semi);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
-                            MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi);
+            WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
+                            MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi));
         }
     }
     return tt;
@@ -378,10 +513,11 @@ void wosgl_InitRGBATextures(GLsizei width, GLsizei height)
     WosTex *t = &s_tex[s_cur];
     if (!s_cur || !t->used || width <= 0 || height <= 0)
         return;
-    free_planes(t);
+    if (switch_planes(t, width, height, FMT_BGRA))
+        return;                 /* reused: its texels are replaced before use */
     t->main = make_plane(width, height, t->wraps, t->wrapt, NULL);
-    t->w = width;
-    t->h = height;
+    t->w = t->pw = width;
+    t->h = t->ph = height;
 }
 
 void wosgl_ResetMovieTexPtr(void) {}
@@ -413,7 +549,8 @@ static GLubyte *read_fb(int x, int y, int w, int h)
             return NULL;
     }
     /* GL's rows run bottom-up: read into the second half, then flip. */
-    glReadPixels(x, fbh - y - h, w, h, GL_RGBA, GL_UNSIGNED_BYTE, s_read + (size_t)w * h * 4);
+    wos_prof_reads++;
+    WOS_PROF(WOS_PROF_READ, glReadPixels(x, fbh - y - h, w, h, GL_RGBA, GL_UNSIGNED_BYTE, s_read + (size_t)w * h * 4));
     for (row = 0; row < h; row++)
         memcpy(s_read + (size_t)row * w * 4,
                s_read + (size_t)w * h * 4 + (size_t)(h - 1 - row) * w * 4, (size_t)w * 4);
@@ -464,7 +601,7 @@ static int capture_into_bound(int srcW, int srcH, int intensity)
     GLubyte *rgba;
     int w, h, i;
 
-    if (!s_cur || !t->main || t->w <= 0 || t->h <= 0 || srcW <= 0 || srcH <= 0)
+    if (!s_cur || !t->main || t->w <= 0 || t->h <= 0 || srcW <= 0 || srcH <= 0 || t->fmt != FMT_BGRA)
         return 0;
     w = t->w < srcW ? t->w : srcW;
     h = t->h < srcH ? t->h : srcH;
@@ -509,7 +646,7 @@ void wosgl_CopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yo
     int i, fbh = wos_video_height();
     (void)target; (void)level;
 
-    if (!s_cur || !t->main || width <= 0 || height <= 0 || !ensure_conv(width * height))
+    if (!s_cur || !t->main || width <= 0 || height <= 0 || !ensure_conv(width * height) || t->fmt != FMT_BGRA)
         return;
     /* GL's (x, y) is the bottom-left corner of the source. */
     rgba = read_fb(x, fbh - y - height, width, height);
@@ -795,6 +932,13 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
     WosPass ps;
     int pass, i;
     int passes = (texen && s_blend_enabled) ? 2 : 1;
+    float ss = 1.0f, ts = 1.0f;
+    const WosTex *bt = &s_tex[s_cur];
+
+    if (texen && bt->pw > 0 && bt->ph > 0 && (bt->pw != bt->w || bt->ph != bt->h)) {
+        ss = (float)bt->w / (float)bt->pw;
+        ts = (float)bt->h / (float)bt->ph;
+    }
 
     for (pass = 0; pass < passes; pass++) {
         if (!apply_state(texen, color_enabled, pass, &ps))
@@ -807,7 +951,7 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
             if (color_enabled && !one_color)
                 emit_color(&ps, p->c);
             if (texen)
-                glTexCoord2f(p->s, p->t);
+                glTexCoord2f(p->s * ss, p->t * ts);
             glVertex3f(p->x, p->y, p->z);
         }
         glEnd();

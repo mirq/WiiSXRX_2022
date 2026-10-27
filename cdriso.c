@@ -1629,7 +1629,11 @@ static long CALLBACK ISOreadTrack(unsigned char *time) {
 #ifdef __WARPOS__
 	WOS_CRUMB2(40, sector);
 #endif
+#ifdef __WARPOS__
+	WOS_PROF(WOS_PROF_CDR, ret = cdimg_read_func(cdHandle, 0, cdbuffer, sector));
+#else
 	ret = cdimg_read_func(cdHandle, 0, cdbuffer, sector);
+#endif
 #ifdef __WARPOS__
 	WOS_CRUMB(41);
 #endif

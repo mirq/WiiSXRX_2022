@@ -169,10 +169,16 @@ void psxBranchTest() {
 	}
 #endif
 
+#ifdef __WARPOS__
+	uint32_t wos_t0 = wos_tb_lo(), wos_t1;
+	wos_pc_sample(psxRegs.pc, wos_t0);
+#endif
 	if ((psxRegs.cycle - psxNextsCounter) >= psxNextCounter)
 		psxRcntUpdate();
 #ifdef __WARPOS__
 	WOS_CRUMB2(62, psxRegs.interrupt);
+	wos_t1 = wos_tb_lo();
+	wos_prof_ticks[WOS_PROF_RCNT] += wos_t1 - wos_t0;
 #endif
 
 	if (psxRegs.interrupt) {
@@ -257,6 +263,7 @@ void psxBranchTest() {
 
 #ifdef __WARPOS__
 	WOS_CRUMB(68);
+	wos_prof_ticks[WOS_PROF_IRQ] += wos_tb_lo() - wos_t1;
 #endif
 	psxRegs.CP0.n.Cause &= ~0x400;
 	if (psxHu32(0x1070) & psxHu32(0x1074))
