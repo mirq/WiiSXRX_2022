@@ -161,6 +161,7 @@ extern u32 psxNextCounter, psxNextsCounter;
 #ifdef __WARPOS__
 u32 wos_next_event;
 u32 wos_bt_calls, wos_bt_full;
+u32 wos_ev_why[32];     /* what set the next event: counters, a raised irq, 2 + PSXINT_* */
 int wos_nogate, wos_noidle;    /* SetEnv WSX_NOGATE / WSX_NOIDLE 1: off, to compare */
 
 /* The interrupts psxBranchTest below services; the others are set in
@@ -176,16 +177,18 @@ static void wos_plan_next_event(void)
 {
 	u32 c = psxRegs.cycle, bits = psxRegs.interrupt & WOS_HANDLED_INTS, i;
 	s32 best = (s32)(psxNextsCounter + psxNextCounter - c);
+	int why = 0;
 
 	if (psxHu32(0x1070) & psxHu32(0x1074))
-		best = 0;
+		best = 0, why = 1;
 	for (i = 0; bits && best > 0; i++, bits >>= 1) {
 		if (bits & 1) {
 			s32 d = (s32)(psxRegs.intCycle[i].sCycle + psxRegs.intCycle[i].cycle - c);
 			if (d < best)
-				best = d;
+				best = d, why = 2 + i;
 		}
 	}
+	wos_ev_why[why < 32 ? why : 31]++;
 	if (best < 0)
 		best = 0;
 	wos_next_event = c + best;

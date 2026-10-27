@@ -64,6 +64,11 @@ as well. This is how `minigl_ppc.dll` was deployed.
   check) and logs `[glbench]` lines. For MiniGL's own buckets, build its
   profile DLL with `MGLPPC_PROFILE=1 MGLPPC_AUTOREPORT=1` (own `OBJDIR`); it
   appends to `T:mglprof-live.log` every 150 presents.
+- `SetEnv WSX_VLC n` selects how PsyQ's movie bitstream decoder
+  (`DecDCTvlc2`, found by its code) runs: 1 (default) as C (`WarpOS/wos_vlc.c`),
+  0 on the dynarec, 2 checked: an interpreter runs the routine's own code
+  next to the C version, and the `[prof] movie decoder` line counts any
+  difference. Tekken 3's build matches; Silent Hill's differs in 26 words.
 - `SetEnv WSX_QUIT 1` quits from the bridge. If the CPU loop does not
   return, the program shuts down from the vblank 2 s later.
 - Don't use Break or CTRL-C.

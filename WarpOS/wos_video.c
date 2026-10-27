@@ -461,6 +461,43 @@ void wos_video_frame_stats(void)
                             wos_xa_rip[0], wos_xa_rip[1], wos_xa_rip[2]);
                     memset(wos_xa_rip, 0, sizeof wos_xa_rip);
                 }
+                {
+                    extern unsigned int wos_vlc_calls, wos_vlc_bad, wos_vlc_instr;
+                    if (wos_vlc_calls)
+                        wos_log("[prof] movie decoder as C: %u calls, %u instructions each, %lu us a frame, %u differing from its code",
+                                wos_vlc_calls, wos_vlc_instr / wos_vlc_calls, st[WOS_PROF_VLC], wos_vlc_bad);
+                    wos_vlc_calls = wos_vlc_instr = 0;
+                }
+                {
+                    extern unsigned int wos_rec_blocks, wos_rec_flushes;
+                    wos_log("[prof] dynarec: %lu blocks made a frame in %lu us, %u full flushes",
+                            (unsigned long)(wos_rec_blocks / s_stat_frames), st[WOS_PROF_REC], wos_rec_flushes);
+                    wos_rec_blocks = wos_rec_flushes = 0;
+                }
+                {
+                    extern unsigned int wos_st_polls, wos_st_skips, wos_ev_why[32];
+                    char line[200];
+                    int i, len = 0, top[4], n, j;
+                    for (n = 0; n < 4; n++) {
+                        int best = -1;
+                        for (i = 0; i < 32; i++) {
+                            for (j = 0; j < n && top[j] != i; j++)
+                                ;
+                            if (j == n && wos_ev_why[i] && (best < 0 || wos_ev_why[i] > wos_ev_why[best]))
+                                best = i;
+                        }
+                        if (best < 0)
+                            break;
+                        top[n] = best;
+                        len += snprintf(line + len, sizeof line - len, " %d:%lu", best,
+                                        (unsigned long)(wos_ev_why[best] / s_stat_frames));
+                    }
+                    line[len] = 0;
+                    wos_log("[prof] movie polls %u, %u skipped to the next event; next event set by (0 counters, 1 irq, 2+int) a frame:%s",
+                            wos_st_polls, wos_st_skips, line);
+                    wos_st_polls = wos_st_skips = 0;
+                    memset(wos_ev_why, 0, sizeof wos_ev_why);
+                }
             }
         }
         wos_log("[stats] %lu.%02lu fps, %lu presents, %lu late; per frame: upload %lu us, swap %lu us, wait %lu us",

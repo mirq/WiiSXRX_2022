@@ -1208,6 +1208,10 @@ static void recError() {
 	SysRunGui();
 }
 
+#ifdef __WARPOS__
+u32 wos_rec_blocks, wos_rec_flushes;
+#endif
+
 __inline static void execute() {
 	void (**recFunc)();
 	char *p;
@@ -1223,12 +1227,22 @@ __inline static void execute() {
 		#endif // DISP_DEBUG
 		//psxCpu->Clear(0x0, 0x20000);
 		memset(recRAM, 0, 0x200000);
+#ifdef __WARPOS__
+		wos_rec_flushes++;
+#endif
 		recRecompile();
 		p = (char*)PC_REC(psxRegs.pc);
 		psxRegs.ICache_valid = TRUE;
 	}
 	else if (*p == 0) {
+#ifdef __WARPOS__
+		u32 t0 = wos_tb_lo();
 		recRecompile();
+		wos_prof_ticks[WOS_PROF_REC] += wos_tb_lo() - t0;
+		wos_rec_blocks++;
+#else
+		recRecompile();
+#endif
 		#ifdef DISP_DEBUG
 		if (psxRegs.ICache_valid == FALSE)
 		{
@@ -3474,6 +3488,22 @@ static void (*recCP2BSC[32])(struct psxCP2Regs *regs) = {
 	recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL
 };
 
+#ifdef __WARPOS__
+int wos_vlc_match(u32 pc);
+int wos_stnext_match(u32 pc);
+void wos_stnext_poll(void);
+u32 wos_vlc_run(u32 budget);
+static void wos_vlc_block(void)
+{
+	/* instructions until the next event is due */
+	s32 d = (s32)(wos_next_event - psxRegs.cycle);
+	u32 budget = d > 0 ? (u32)d * 100 / cycleMult + 1 : 1;
+	u32 t0 = wos_tb_lo();
+	psxRegs.cycle += wos_vlc_run(budget) * cycleMult / 100;
+	wos_prof_ticks[WOS_PROF_VLC] += wos_tb_lo() - t0;
+}
+#endif
+
 // added xjsxjs197 start
 static void recRecompileInit()
 {
@@ -3559,6 +3589,25 @@ __inline static void recRecompile() {
 
 	pcold = pc = psxRegs.pc;
 
+#ifdef __WARPOS__
+	/* PsyQ's movie decoder: the block is a call to its C version
+	 * (WarpOS/wos_vlc.c), which leaves the pc at the return address. */
+	if (wos_vlc_match(pc)) {
+		CALLFunc((u32)wos_vlc_block);
+		FlushAllHWReg();
+		CALLFunc((u32)psxBranchTest);
+		Return();
+		branch = 1;
+	}
+	else
+#endif
+	{
+#ifdef __WARPOS__
+	/* PsyQ's StGetNext: a poll for a movie frame that will fail again
+	 * lets the time run on to the next event */
+	if (wos_stnext_match(pc))
+		CALLFunc((u32)wos_stnext_poll);
+#endif
 	//where did 500 come from?
 	for (count=0; count<500;) {
         // upd xjsxjs197 start
@@ -3588,11 +3637,13 @@ __inline static void recRecompile() {
             break;
         }
 	}
+	}
   if(!branch) {
 	  iFlushRegs(pc);
 	  LIW(PutHWRegSpecial(PSXPC), pc);
 	  iRet();
   }
+  branch = 0;
 
   u32 endRange = (u32)(u8*)ppcPtr-(u32)(u8*)ptr;
 #ifdef __WARPOS__
