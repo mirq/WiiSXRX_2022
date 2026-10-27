@@ -27,6 +27,11 @@
 /* The keyboard's PSX bindings: raw key -> PSXB_* bit. */
 static uint16_t s_keymap[128];
 static uint8_t  s_keydown[128];
+/* Frames a pressed key still reads as held after its release: the port is
+ * drained every few frames, and a tap can come and go inside one drain. */
+#define KEY_LATCH 4
+static uint8_t  s_keylatch[128];
+static unsigned s_peek_drains, s_timer_drains, s_timer_mail;
 
 /* Joystick ports: live (a stick or pad answers) and when to look again. */
 static int      s_port_live[2];
@@ -62,6 +67,7 @@ void wos_input_init(void)
     s_joyports = wos_env_int("WSX_JOYPORTS", 0);
     set_default_keys();
     memset(s_keydown, 0, sizeof(s_keydown));
+    memset(s_keylatch, 0, sizeof(s_keylatch));
     memset(s_port_live, 0, sizeof(s_port_live));
     memset(s_port_probe, 0, sizeof(s_port_probe));
     memset(s_port_buttons, 0, sizeof(s_port_buttons));
@@ -87,7 +93,7 @@ static uint16_t keyboard_buttons(void)
     uint16_t b = 0;
     int i;
     for (i = 0; i < 128; i++)
-        if (s_keydown[i])
+        if (s_keydown[i] || s_keylatch[i])
             b |= s_keymap[i];
     return b;
 }
@@ -98,6 +104,8 @@ static unsigned handle_key(UWORD code, UWORD qual)
     int key  = code & 0x7F;
 
     s_keydown[key] = (uint8_t)down;
+    if (down)
+        s_keylatch[key] = KEY_LATCH;
     if (!down || (qual & IEQUALIFIER_REPEAT))
         return 0;
     switch (key) {
@@ -178,9 +186,23 @@ unsigned wos_input_poll(void *window)
             act |= WOS_ACT_QUIT;
         }
     }
-    if (win && win->UserPort && (frame % 10 == 0 || port_has_message(win->UserPort))) {
+    {
+        int i;
+        for (i = 0; i < 128; i++)
+            if (s_keylatch[i])
+                s_keylatch[i]--;
+    }
+    if (frame % 1500 == 0)
+        wos_log("[input] drains: %u on mail seen, %u by timer (%u of them with mail)",
+                s_peek_drains, s_timer_drains, s_timer_mail);
+    if (win && win->UserPort) {
         struct IntuiMessage *m;
+        int peek = port_has_message(win->UserPort), got = 0;
+        if (!peek && frame % 50 != 0)   /* the peek has missed nothing so far */
+            goto ports;
+        if (peek) s_peek_drains++; else s_timer_drains++;
         while ((m = (struct IntuiMessage *)GetMsg(win->UserPort)) != NULL) {
+            got = 1;
             ULONG cls  = m->Class;
             UWORD code = m->Code;
             UWORD qual = m->Qualifier;
@@ -192,7 +214,10 @@ unsigned wos_input_poll(void *window)
             else if (cls == IDCMP_INACTIVEWINDOW)
                 memset(s_keydown, 0, sizeof(s_keydown));
         }
+        if (got && !peek)
+            s_timer_mail++;
     }
+ports:
 
     if (s_joyports) {
         static unsigned turn;

@@ -851,6 +851,7 @@ static void execI_NoCache() {
 }
 
 void psxTestSWInts(int step) {
+	WOS_EVENT_NOW();
 	if (psxRegs.CP0.n.Cause & psxRegs.CP0.n.SR & 0x0300 &&
 	   psxRegs.CP0.n.SR & 0x1) {
 		//if (step)

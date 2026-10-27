@@ -24,6 +24,7 @@
 #include "r3000a.h"
 #ifdef __WARPOS__
 #include "WarpOS/wos_sys.h"
+#include "WarpOS/wos_idle.h"
 #endif
 #include "psxhw.h"
 #include "psxdma.h"
@@ -157,21 +158,79 @@ void psxException(u32 cause, enum R3000Abdt bdt, psxCP0Regs *cp0) {
 }
 
 extern u32 psxNextCounter, psxNextsCounter;
+#ifdef __WARPOS__
+u32 wos_next_event;
+u32 wos_bt_calls, wos_bt_full;
+
+/* The interrupts psxBranchTest below services; the others are set in
+ * psxRegs.interrupt but never cleared. */
+#define WOS_HANDLED_INTS ((1 << PSXINT_SIO) | (1 << PSXINT_CDR) | (1 << PSXINT_CDREAD) | \
+	(1 << PSXINT_GPUDMA) | (1 << PSXINT_MDECOUTDMA) | (1 << PSXINT_SPUDMA) | \
+	(1 << PSXINT_MDECINDMA) | (1 << PSXINT_GPUOTCDMA) | (1 << PSXINT_CDRDMA) | \
+	(1 << PSXINT_CDRLID) | (1 << PSXINT_SPU_UPDATE))
+
+/* The earliest cycle at which psxBranchTest has anything to do. An irq that
+ * is raised but masked keeps it at "now", as before. */
+static void wos_plan_next_event(void)
+{
+	u32 c = psxRegs.cycle, bits = psxRegs.interrupt & WOS_HANDLED_INTS, i;
+	s32 best = (s32)(psxNextsCounter + psxNextCounter - c);
+
+	if (psxHu32(0x1070) & psxHu32(0x1074))
+		best = 0;
+	for (i = 0; bits && best > 0; i++, bits >>= 1) {
+		if (bits & 1) {
+			s32 d = (s32)(psxRegs.intCycle[i].sCycle + psxRegs.intCycle[i].cycle - c);
+			if (d < best)
+				best = d;
+		}
+	}
+	if (best < 0)
+		best = 0;
+	wos_next_event = c + best;
+}
+#endif
+
 void psxBranchTest() {
 #ifdef __WARPOS__
+	{
+		static u32 wos_prev_pc;
+		u32 pc = psxRegs.pc, prev = wos_prev_pc;
+		wos_prev_pc = pc;
+		if (!(++wos_bt_calls & 15))
+			wos_pc_sample(pc, wos_tb_lo());
+		if ((s32)(psxRegs.cycle - wos_next_event) < 0) {
+			int i;
+			for (i = 0; i < WOS_IDLE_SLOTS; i++) {
+				if (wos_idle[i].pc == pc && wos_idle[i].pred == prev) {
+					if (wos_idle_still(&wos_idle[i])) {
+						psxRegs.cycle = wos_next_event;
+						wos_idle_skips++;
+						goto wos_full;
+					}
+				}
+			}
+			if (wos_idle_tracing())
+				wos_idle_trace(pc);
+			else if (!(wos_bt_calls & 255))
+				wos_idle_start_trace();
+			return;
+		}
+	}
+wos_full:
+	wos_bt_full++;
 	{
 		extern void wos_watchdog(void);
 		static unsigned wos_wd;
 		WOS_CRUMB_SET(2, psxRegs.pc);
 		WOS_CRUMB(61);
-		if (!(++wos_wd & 0xffff))
+		if (!(++wos_wd & 0x3fff))
 			wos_watchdog();
 	}
 #endif
 
 #ifdef __WARPOS__
 	uint32_t wos_t0 = wos_tb_lo(), wos_t1;
-	wos_pc_sample(psxRegs.pc, wos_t0);
 #endif
 	if ((psxRegs.cycle - psxNextsCounter) >= psxNextCounter)
 		psxRcntUpdate();
@@ -271,6 +330,7 @@ void psxBranchTest() {
 	if (((psxRegs.CP0.n.Cause | 1) & psxRegs.CP0.n.SR & 0x401) == 0x401)
 		psxException(0, 0, &psxRegs.CP0);
 #ifdef __WARPOS__
+	wos_plan_next_event();
 	WOS_CRUMB(69);
 #endif
 }

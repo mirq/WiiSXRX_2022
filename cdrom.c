@@ -334,6 +334,14 @@ static void sec2msf(unsigned int s, u8 *msf) {
 	msf[2] = s;
 }
 
+#ifdef __WARPOS__
+/* Why sectors are not played as XA: counted for the log. */
+unsigned int wos_xa_why[6];
+#define XA_WHY(n) { wos_xa_why[n]++; break; }
+#else
+#define XA_WHY(n) break
+#endif
+
 // cdrPlayReadInterrupt
 #define CDRPLAYREAD_INT(eCycle, isFirst) { \
 	u32 e_ = eCycle; \
@@ -1558,17 +1566,17 @@ static void cdrReadInterrupt(void)
 	do {
 		// try to process as adpcm
 		if (!(cdr.Mode & MODE_STRSND))
-			break;
+			XA_WHY(0);
 		if (buf[3] != 2 || (subhdr->mode & 0x44) != 0x44) // or 0x64?
-			break;
+			XA_WHY(1);
 		CDR_LOG("f=%d m=%d %d,%3d | %d,%2d | %d,%2d\n", !!(cdr.Mode & MODE_SF), cdr.Muted,
 			subhdr->file, subhdr->chan, cdr.CurFile, cdr.CurChannel, cdr.FilterFile, cdr.FilterChannel);
 		if ((cdr.Mode & MODE_SF) && (subhdr->file != cdr.FilterFile || subhdr->chan != cdr.FilterChannel))
-			break;
+			XA_WHY(2);
 		if (subhdr->chan & 0x80) { // ?
 			if (subhdr->chan != 0xff)
 				log_unhandled("adpcm %d:%d\n", subhdr->file, subhdr->chan);
-			break;
+			XA_WHY(3);
 		}
 		if (!cdr.FileChannelSelected) {
 			cdr.CurFile = subhdr->file;
@@ -1576,15 +1584,18 @@ static void cdrReadInterrupt(void)
 			cdr.FileChannelSelected = 1;
 		}
 		else if (subhdr->file != cdr.CurFile || subhdr->chan != cdr.CurChannel)
-			break;
+			XA_WHY(4);
 
 		// accepted as adpcm
 		deliver_data = 0;
 
 		if (Config.Xa)
-			break;
+			XA_WHY(5);
 		is_start = !cdr.AdpcmActive;
 		cdr.AdpcmActive = !xa_decode_sector(&cdr.Xa, buf + 4, is_start);
+#ifdef __WARPOS__
+		{ extern unsigned int wos_xa_sectors; wos_xa_sectors += cdr.AdpcmActive ? 1 : 0x10000; }
+#endif
 		if (cdr.AdpcmActive)
 			SPU_playADPCMchannel(&cdr.Xa, psxRegs.cycle, is_start);
 	} while (0);

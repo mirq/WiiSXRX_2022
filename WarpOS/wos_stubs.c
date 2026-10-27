@@ -22,6 +22,7 @@
 
 u32 event_cycles[PSXINT_COUNT];
 u32 next_interupt;
+unsigned int wos_xa_sectors;
 
 static void irqNoOp(void) {}
 void lightgunInterrupt(void) {}

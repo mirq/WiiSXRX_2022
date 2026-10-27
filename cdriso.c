@@ -34,6 +34,7 @@
 
 #ifdef __WARPOS__
 #include "WarpOS/wos_sys.h"
+#include "WarpOS/wos_cdasync.h"
 #endif
 #ifndef __WARPOS__
 #include <ogc/lwp.h>
@@ -1097,7 +1098,8 @@ static int opensbifile(const char *isoname) {
 #ifdef __WARPOS__
 /* A read is a trip to the 68k's dos.library, and every fseek drops stdio's
  * buffer: a sector read cost a 16 KB read. Sectors come in runs, so they are
- * read 64 at a time and handed out from here. */
+ * read 64 at a time; WarpOS/wos_cdasync.c reads the next run while the game
+ * uses this one. The stdio path below is the fallback. */
 #define WOS_CD_RUN 64
 static struct {
 	FILE *f;
@@ -1109,6 +1111,8 @@ static struct {
 static int cdread_normal(FILE *f, unsigned int base, void *dest, int sector)
 {
 	int n;
+	if (f == cdHandle && wos_cda_ok() && base % CD_FRAMESIZE_RAW == 0)
+		return wos_cda_read((int)(base / CD_FRAMESIZE_RAW) + sector, dest);
 	if (wos_cd.f != f || wos_cd.base != base ||
 	    sector < wos_cd.first || sector >= wos_cd.first + wos_cd.count) {
 		wos_cd.f = f;
@@ -1407,6 +1411,10 @@ static long CALLBACK ISOopen(void) {
     }
 
 	cdHandle = fopen(GetIsoFile(), "rb");
+#ifdef __WARPOS__
+	if (cdHandle != NULL && !wos_cda_open(GetIsoFile()))
+		SysPrintf("cd: no asynchronous reads, stdio only\n");
+#endif
 	if (cdHandle == NULL) {
 		SysPrintf(_("Could't open '%s' for reading: %s\n"),
 			GetIsoFile(), strerror(errno));
@@ -1537,6 +1545,7 @@ static long CALLBACK ISOclose(void) {
 
 #ifdef __WARPOS__
 	wos_cd.f = NULL;
+	wos_cda_close();
 #endif
 	if (cdHandle != NULL) {
 		fclose(cdHandle);

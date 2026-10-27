@@ -83,6 +83,16 @@ extern char fpsInfo[32];
 
 void OldGpuCheckFrameRate(void)
 {
+#ifdef __WARPOS__
+ /* FrameCap waits out every fast frame and never makes up a slow one; the
+  * WarpOS pacer keeps a running deadline, so they even out. */
+ {
+  extern void wos_video_limit(float hz);
+  if(UseFrameLimit && fFrameRateHz > 1.0f) wos_video_limit(fFrameRateHz);
+  if(showFPSonScreen == FPS_SHOW) calcfps();
+  return;
+ }
+#endif
 #ifdef PROFILE
  start_section(IDLE_SECTION);
 #endif

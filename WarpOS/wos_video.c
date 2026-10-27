@@ -236,7 +236,7 @@ void wos_video_limit(float hz)
         return;
     period = (uint64_t)(1000000.0f / hz);
     now = wos_now_us();
-    if (!s_next_frame_us || now > s_next_frame_us + 3 * period) {
+    if (!s_next_frame_us || now > s_next_frame_us + 8 * period) {
         /* first frame, or far behind: start again from now */
         s_next_frame_us = now + period;
         s_stat_late++;
@@ -285,6 +285,26 @@ void wos_video_frame_stats(void)
                 (unsigned long)((wos_prof_reads >> 8) & 0xff),
                 st[WOS_PROF_SYS], st[WOS_PROF_INPUT]);
         wos_prof_reads = 0;
+        {
+            extern unsigned int wos_bt_calls, wos_bt_full, wos_xa_sectors;
+            wos_log("[prof] branch tests per frame %lu, %lu of them full; xa sectors %lu played, %lu refused",
+                    (unsigned long)(wos_bt_calls / s_stat_frames),
+                    (unsigned long)(wos_bt_full / s_stat_frames),
+                    (unsigned long)(wos_xa_sectors & 0xffff), (unsigned long)(wos_xa_sectors >> 16));
+            wos_bt_calls = wos_bt_full = wos_xa_sectors = 0;
+            {
+                extern unsigned int wos_idle_found, wos_idle_skips;
+                wos_log("[prof] idle loops found %u, skips per frame %lu",
+                        wos_idle_found, (unsigned long)(wos_idle_skips / s_stat_frames));
+                wos_idle_skips = 0;
+            }
+            {
+                extern unsigned int wos_xa_why[6];
+                wos_log("[prof] not xa: no strsnd %u, not form2 audio %u, filter %u, chan 0x80 %u, other chan %u, xa off %u",
+                        wos_xa_why[0], wos_xa_why[1], wos_xa_why[2], wos_xa_why[3], wos_xa_why[4], wos_xa_why[5]);
+                memset(wos_xa_why, 0, sizeof wos_xa_why);
+            }
+        }
         wos_log("[stats] %lu.%02lu fps, %lu presents, %lu late; per frame: upload %lu us, swap %lu us, wait %lu us",
                 fps100 / 100, fps100 % 100,
                 (unsigned long)s_stat_presents, (unsigned long)s_stat_late,

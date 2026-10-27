@@ -337,10 +337,22 @@ extern u32 next_interupt;
 
 void new_dyna_freeze(void *f, int mode);
 
+#ifdef __WARPOS__
+/* The cycle of the next event psxBranchTest has to handle; until then it
+ * returns at once (it is called after every translated block). */
+extern u32 wos_next_event;
+#define WOS_EVENT_AT(abs) do { if ((s32)(wos_next_event - (abs)) > 0) wos_next_event = (abs); } while (0)
+#define WOS_EVENT_NOW() (wos_next_event = psxRegs.cycle)
+#else
+#define WOS_EVENT_AT(abs) do { } while (0)
+#define WOS_EVENT_NOW() do { } while (0)
+#endif
+
 #define set_event_raw_abs(e, abs) { \
 	u32 abs_ = abs; \
 	s32 di_ = next_interupt - abs_; \
 	event_cycles[e] = abs_; \
+	WOS_EVENT_AT(abs_); \
 	if (di_ > 0) { \
 		/*printf("%u: next_interupt %u -> %u\n", psxRegs.cycle, next_interupt, abs_);*/ \
 		next_interupt = abs_; \

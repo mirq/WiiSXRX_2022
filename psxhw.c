@@ -280,7 +280,7 @@ u32 psxHwRead32(u32 add) {
     return hard;
 }
 
-void psxHwWrite8(u32 add, u32 value) {
+static void psxHwWrite8_(u32 add, u32 value) {
     switch (add & 0xffff) {
         case 0x1040: sioWrite8(value); return;
         case 0x10f6:
@@ -302,7 +302,7 @@ void psxHwWrite8(u32 add, u32 value) {
     psxHu8(add) = value;
 }
 
-void psxHwWrite16(u32 add, u32 value) {
+static void psxHwWrite16_(u32 add, u32 value) {
     switch (add & 0xffff) {
         case 0x1040: sioWrite8((unsigned char)value);  return;
         case 0x1044: return;
@@ -378,7 +378,7 @@ void psxHwWrite16(u32 add, u32 value) {
     STORE_SWAP16p(psxHAddr(add), value);
 }
 
-void psxHwWrite32(u32 add, u32 value) {
+static void psxHwWrite32_(u32 add, u32 value) {
     switch (add & 0xffff) {
         case 0x1040: sioWrite8((unsigned char)value); return;
         case 0x1070: psxHwWriteIstat(value); return;
@@ -445,3 +445,14 @@ void psxHwWrite32(u32 add, u32 value) {
 int psxHwFreeze(gzFile f, int Mode) {
     return 0;
 }
+
+#ifdef __WARPOS__
+/* Events these start are scheduled through set_event, which tells
+ * psxBranchTest; an irq they raise directly is caught here. */
+#define WOS_IRQ_CHECK() do { if (psxHu32(0x1070) & psxHu32(0x1074)) WOS_EVENT_NOW(); } while (0)
+#else
+#define WOS_IRQ_CHECK() do { } while (0)
+#endif
+void psxHwWrite8(u32 add, u32 value) { psxHwWrite8_(add, value); WOS_IRQ_CHECK(); }
+void psxHwWrite16(u32 add, u32 value) { psxHwWrite16_(add, value); WOS_IRQ_CHECK(); }
+void psxHwWrite32(u32 add, u32 value) { psxHwWrite32_(add, value); WOS_IRQ_CHECK(); }
