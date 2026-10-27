@@ -55,12 +55,17 @@ as well. This is how `minigl_ppc.dll` was deployed.
   WiiStation joins the words that are not `Key=value` back into the path,
   since Execute drops the quotes.
 - `SetEnv WSX_AUTOFRAMES n` quits after n PSX frames.
+- `SetEnv WSX_LOADSTATE n` loads the save state (F5 saves, F7 loads) at
+  frame n: the quick way back to a scene. It persists in ENV:, so
+  `UnSetEnv WSX_LOADSTATE` afterwards. `WSX_NOGATE 1` / `WSX_NOIDLE 1`
+  switch off the event gate and the idle-loop skip, to compare.
 - `SetEnv WSX_QUIT 1` quits from the bridge. If the CPU loop does not
   return, the program shuts down from the vblank 2 s later.
 - Don't use Break or CTRL-C.
 - Keys from the bridge (`amiga_input_key`) reach the game:
   - Return is Start, X is Cross, Esc quits.
-  - Hold a key for a few ticks; the game polls once a frame.
+  - Hold a key for a few ticks; the game polls once a frame. AmigaDOS
+    `Wait n` is n seconds, not ticks.
 - Settings in ENV: are read with `GetVar`; newlib's `getenv()` finds nothing
   under MOS2WOS.
 
@@ -97,9 +102,12 @@ The log has three kinds of periodic line:
 - Program drawer: `Work:WiiStation/`.
   - `WiiStation`
   - `WiiStation-R200` (the launch script)
-  - `minigl_ppc.dll`: from MiniGL branch `wiistation`, converted on Linux with
-    `tools/elf2warpos/elf2warpos.py`. The Oct 21 DLL from `Work:SilentHill WOS`
-    is kept as `mgl_sh.dll`, its host as `mglhost_sh`.
+  - `minigl_ppc.dll`: from MiniGL branch `wiistation` (e3c07f7 or later:
+    partial subimages of TexImage2D textures take the direct path; WiiStation
+    relies on it for 3D speed), converted on Linux with
+    `tools/elf2warpos/elf2warpos.py`. The previous build is `mgl_prev.dll`; the
+    Oct 21 DLL from `Work:SilentHill WOS` is `mgl_sh.dll`, its host
+    `mglhost_sh`.
   - `minigl_ppc_host`
   - `wiistation.cfg`
   - `bios/`, `memcards/`, `savestates/`
