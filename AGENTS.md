@@ -59,6 +59,11 @@ as well. This is how `minigl_ppc.dll` was deployed.
   frame n: the quick way back to a scene. It persists in ENV:, so
   `UnSetEnv WSX_LOADSTATE` afterwards. `WSX_NOGATE 1` / `WSX_NOIDLE 1`
   switch off the event gate and the idle-loop skip, to compare.
+- `SetEnv WSX_GLBENCH 1` times MiniGL's immediate mode at startup (draws in
+  the shapes `wos_gl.c` uses, each state change on its own, and a mip-level
+  check) and logs `[glbench]` lines. For MiniGL's own buckets, build its
+  profile DLL with `MGLPPC_PROFILE=1 MGLPPC_AUTOREPORT=1` (own `OBJDIR`); it
+  appends to `T:mglprof-live.log` every 150 presents.
 - `SetEnv WSX_QUIT 1` quits from the bridge. If the CPU loop does not
   return, the program shuts down from the vblank 2 s later.
 - Don't use Break or CTRL-C.
@@ -102,9 +107,9 @@ The log has three kinds of periodic line:
 - Program drawer: `Work:WiiStation/`.
   - `WiiStation`
   - `WiiStation-R200` (the launch script)
-  - `minigl_ppc.dll`: from MiniGL branch `wiistation` (e3c07f7 or later:
-    partial subimages of TexImage2D textures take the direct path; WiiStation
-    relies on it for 3D speed), converted on Linux with
+  - `minigl_ppc.dll`: from MiniGL branch `wiistation` (061cd8b or later:
+    direct-path texture pages and partial updates, the CP register cache;
+    WiiStation relies on them for 3D speed), converted on Linux with
     `tools/elf2warpos/elf2warpos.py`. The previous build is `mgl_prev.dll`; the
     Oct 21 DLL from `Work:SilentHill WOS` is `mgl_sh.dll`, its host
     `mglhost_sh`.

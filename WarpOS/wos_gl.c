@@ -184,7 +184,7 @@ static GLint wrap_conv(GLint p)
 }
 
 /* A MiniGL texture of w x h, its texels from bgra (or black). */
-unsigned int wos_tex_subs, wos_tex_texels;    /* partial uploads, for the log */
+unsigned int wos_tex_subs, wos_tex_texels, wos_draws;    /* partial uploads, for the log */
 static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra, int fmt);
 static GLuint make_plane(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra)
 {
@@ -944,8 +944,14 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
     }
 
     for (pass = 0; pass < passes; pass++) {
-        if (!apply_state(texen, color_enabled, pass, &ps))
+        int ok;
+        uint32_t t0 = wos_tb_lo(), t1;
+        ok = apply_state(texen, color_enabled, pass, &ps);
+        t1 = wos_tb_lo();
+        wos_prof_ticks[WOS_PROF_STATE] += t1 - t0;
+        if (!ok)
             continue;
+        wos_draws++;
         glBegin(mode);
         if (!color_enabled || one_color)
             emit_color(&ps, color_enabled ? v[order[0]].c : s_lcol);
@@ -958,6 +964,7 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
             glVertex3f(p->x, p->y, p->z);
         }
         glEnd();
+        wos_prof_ticks[WOS_PROF_DRAW] += wos_tb_lo() - t1;
     }
 }
 

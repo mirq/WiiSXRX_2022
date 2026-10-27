@@ -43,6 +43,132 @@ int   wos_video_width(void)  { return s_width; }
 int   wos_video_height(void) { return s_height; }
 void *wos_video_window(void) { return s_window; }
 
+
+/* SetEnv WSX_GLBENCH 1: time MiniGL's immediate mode at startup, the way
+ * wos_gl.c draws (4-vertex strips, colour + texcoord per vertex), to tell
+ * the cost of a draw from the cost of a state change between draws. */
+#ifndef GL_RGB_SCALE
+#define GL_RGB_SCALE 0x8573
+#endif
+static void gl_bench(void)
+{
+    static GLubyte pix[64 * 64 * 4];
+    GLuint tex[2];
+    int c, i, k;
+    static const char *names[] = {
+        "same state, textured", "texture switch every draw", "blend toggle every draw",
+        "same state, untextured", "triangles, same state", "texenv scale toggle every draw",
+        "GL_QUADS, same state", "quad as 2 triangles, same state"
+    };
+    glGenTextures(2, tex);
+    for (k = 0; k < 2; k++) {
+        memset(pix, k ? 0x80 : 0xff, sizeof pix);
+        glBindTexture(GL_TEXTURE_2D, tex[k]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+    }
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, s_width, s_height, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    for (c = 0; c < 8; c++) {
+        uint64_t t0, t1;
+        int n = 2000;
+        glFinish();
+        t0 = wos_now_us();
+        for (i = 0; i < n; i++) {
+            float x = (float)(i % 40) * 16.0f, y = (float)((i / 40) % 30) * 16.0f;
+            int textured = c != 3;
+            if (textured) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, tex[c == 1 ? (i & 1) : 0]);
+            if (c == 2) {
+                if (i & 1) { glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); }
+                else glDisable(GL_BLEND);
+            }
+            if (c == 5)
+                glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE, (i & 1) ? 2.0f : 1.0f);
+            if (c == 6) {
+                glBegin(GL_QUADS);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 0); glVertex3f(x, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 0); glVertex3f(x + 15, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 1); glVertex3f(x + 15, y + 15, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 1); glVertex3f(x, y + 15, 0);
+                glEnd();
+            } else if (c == 7) {
+                glBegin(GL_TRIANGLES);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 0); glVertex3f(x, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 0); glVertex3f(x + 15, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 1); glVertex3f(x, y + 15, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 1); glVertex3f(x, y + 15, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 0); glVertex3f(x + 15, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 1); glVertex3f(x + 15, y + 15, 0);
+                glEnd();
+            } else if (c == 4) {
+                glBegin(GL_TRIANGLES);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 0); glVertex3f(x, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 0); glVertex3f(x + 15, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 1); glVertex3f(x, y + 15, 0);
+                glEnd();
+            } else {
+                glBegin(GL_TRIANGLE_STRIP);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 0); glVertex3f(x, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 0); glVertex3f(x + 15, y, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(0, 1); glVertex3f(x, y + 15, 0);
+                glColor4f(1, 1, 1, 1); glTexCoord2f(1, 1); glVertex3f(x + 15, y + 15, 0);
+                glEnd();
+            }
+        }
+        t1 = wos_now_us();
+        glFinish();
+        wos_log("[glbench] %s: %lu us a draw to submit, %lu us with the finish",
+                names[c], (unsigned long)((t1 - t0) / n),
+                (unsigned long)((wos_now_us() - t0) / n));
+        glDisable(GL_BLEND);
+        glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE, 1.0f);
+    }
+    glDeleteTextures(2, tex);
+    /* MiniGL correctness: a texture created on the direct path (non-mip
+     * filter set first) that then gets mip levels after all. */
+    {
+        GLuint t;
+        GLenum e0, e1, e2, e3;
+        int lv, sz;
+        while (glGetError() != GL_NO_ERROR)
+            ;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        memset(pix, 0xc0, sizeof pix);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+        e0 = glGetError();
+        for (lv = 1, sz = 32; sz >= 1; lv++, sz >>= 1)
+            glTexImage2D(GL_TEXTURE_2D, lv, GL_RGBA, sz, sz, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+        e1 = glGetError();
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+        glEnable(GL_TEXTURE_2D);
+        glBegin(GL_TRIANGLE_STRIP);
+        glTexCoord2f(0, 0); glVertex3f(0, 0, 0);
+        glTexCoord2f(1, 0); glVertex3f(8, 0, 0);
+        glTexCoord2f(0, 1); glVertex3f(0, 8, 0);
+        glTexCoord2f(1, 1); glVertex3f(8, 8, 0);
+        glEnd();
+        glFinish();
+        e2 = glGetError();
+        /* and a partial update, then a level again */
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 8, 8, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+        glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, 32, 32, 0, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+        e3 = glGetError();
+        wos_log("[glbench] direct texture then mip levels: errors %x %x %x %x (0 = none)",
+                (unsigned)e0, (unsigned)e1, (unsigned)e2, (unsigned)e3);
+        glDeleteTextures(1, &t);
+    }
+    mglSwitchDisplay();
+}
+
 int wos_video_open(void)
 {
     int windowed = wos_env_int("WSX_WINDOW", 0);
@@ -76,6 +202,8 @@ int wos_video_open(void)
     glClear(GL_COLOR_BUFFER_BIT);
     mglSwitchDisplay();
 
+    if (wos_env_int("WSX_GLBENCH", 0))
+        gl_bench();
     s_open = 1;
     s_stat_start_us = wos_now_us();
     wos_log("display %dx%d %s via MiniGL (%s)", s_width, s_height,
@@ -280,7 +408,10 @@ void wos_video_frame_stats(void)
                 (unsigned long)(span / s_stat_frames) - st[WOS_PROF_GPU] - st[WOS_PROF_RCNT]
                     - st[WOS_PROF_IRQ] - st[WOS_PROF_MDEC] - st[WOS_PROF_GP1]);
         {
-            extern unsigned int wos_tex_subs, wos_tex_texels;
+            extern unsigned int wos_tex_subs, wos_tex_texels, wos_draws;
+            wos_log("[prof] MiniGL: state %lu us, begin..end %lu us, %lu draws a frame",
+                    st[WOS_PROF_STATE], st[WOS_PROF_DRAW], (unsigned long)(wos_draws / s_stat_frames));
+            wos_draws = 0;
             wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us, %lu partial uploads of %lu texels a frame",
                     st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xff),
                     st[WOS_PROF_TEXCONV], st[WOS_PROF_TEXUP],

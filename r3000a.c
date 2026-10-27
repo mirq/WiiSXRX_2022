@@ -205,12 +205,16 @@ void psxBranchTest() {
 			for (i = 0; i < WOS_IDLE_SLOTS && !wos_noidle; i++) {
 				if (wos_idle[i].pc == pc && wos_idle[i].pred == prev) {
 					/* Skipped only when the last round changed no
-					 * register: then the next is the same until an
-					 * event changes memory. A countdown never is. */
-					if (memcmp(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs))) {
+					 * register, then the next is the same until an
+					 * event changes memory; or when it only counted a
+					 * timeout down by one (Silent Hill's movie loop
+					 * polls a frame queue up to 2000 times). A short
+					 * countdown or any other change is real work. */
+					if (!wos_idle_same_round(wos_idle[i].regs, psxRegs.GPR.r)) {
 						memcpy(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs));
 						break;
 					}
+					memcpy(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs));
 					if (wos_idle_still(&wos_idle[i])) {
 						psxRegs.cycle = wos_next_event;
 						wos_idle_skips++;

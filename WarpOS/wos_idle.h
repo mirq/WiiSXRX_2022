@@ -21,5 +21,6 @@ void wos_idle_start_trace(void);
 int  wos_idle_tracing(void);
 void wos_idle_trace(u32 pc);
 int  wos_idle_still(WosIdle *w);
+int  wos_idle_same_round(const u32 *last, const u32 *now);
 
 #endif

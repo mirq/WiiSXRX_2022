@@ -185,3 +185,18 @@ int wos_idle_still(WosIdle *w)
     w->pc = 0;
     return 0;
 }
+
+/* Whether one round of an idle loop left the registers as the last one did,
+ * but for one timeout counted down by one. */
+int wos_idle_same_round(const u32 *last, const u32 *now)
+{
+    int i, diff = -1;
+    for (i = 0; i < 34; i++) {
+        if (last[i] != now[i]) {
+            if (diff >= 0)
+                return 0;
+            diff = i;
+        }
+    }
+    return diff < 0 || (now[diff] == last[diff] - 1 && now[diff] > 16);
+}
