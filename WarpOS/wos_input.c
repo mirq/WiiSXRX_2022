@@ -153,17 +153,32 @@ static void read_port(ULONG port, int slot)
     s_port_buttons[slot] = b;
 }
 
+/* Whether a message waits at the port, read from the PPC without a trip to
+ * the 68k: an empty Exec list's head points at its own tail node. The 68k
+ * (Intuition) writes the list, so the PPC may see it late; the caller also
+ * drains the port every few frames regardless. */
+static int port_has_message(struct MsgPort *port)
+{
+    volatile struct List *l = &port->mp_MsgList;
+    return l->lh_Head != (struct Node *)&l->lh_Tail;
+}
+
 unsigned wos_input_poll(void *window)
 {
     struct Window *win = (struct Window *)window;
-    ULONG sigs = SetSignal(0, 0);
+    static unsigned frame;
     unsigned act = 0;
 
-    if (sigs & SIGBREAKF_CTRL_C) {
-        SetSignal(0, SIGBREAKF_CTRL_C);
-        act |= WOS_ACT_QUIT;
+    /* Each OS call is a 68k trip (~2.5 ms for these two): the signals are
+     * looked at once a second, the window's port only when it has mail. */
+    if (++frame % 50 == 0) {
+        ULONG sigs = SetSignal(0, 0);
+        if (sigs & SIGBREAKF_CTRL_C) {
+            SetSignal(0, SIGBREAKF_CTRL_C);
+            act |= WOS_ACT_QUIT;
+        }
     }
-    if (win && win->UserPort) {
+    if (win && win->UserPort && (frame % 10 == 0 || port_has_message(win->UserPort))) {
         struct IntuiMessage *m;
         while ((m = (struct IntuiMessage *)GetMsg(win->UserPort)) != NULL) {
             ULONG cls  = m->Class;

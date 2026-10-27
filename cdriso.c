@@ -1094,6 +1094,41 @@ static int opensbifile(const char *isoname) {
 	return LoadSBI(sbiname, s);
 }
 
+#ifdef __WARPOS__
+/* A read is a trip to the 68k's dos.library, and every fseek drops stdio's
+ * buffer: a sector read cost a 16 KB read. Sectors come in runs, so they are
+ * read 64 at a time and handed out from here. */
+#define WOS_CD_RUN 64
+static struct {
+	FILE *f;
+	unsigned int base;
+	int first, count;
+	unsigned char data[WOS_CD_RUN * CD_FRAMESIZE_RAW];
+} wos_cd;
+
+static int cdread_normal(FILE *f, unsigned int base, void *dest, int sector)
+{
+	int n;
+	if (wos_cd.f != f || wos_cd.base != base ||
+	    sector < wos_cd.first || sector >= wos_cd.first + wos_cd.count) {
+		wos_cd.f = f;
+		wos_cd.base = base;
+		wos_cd.first = sector;
+		wos_cd.count = 0;
+		if (fseek(f, base + sector * CD_FRAMESIZE_RAW, SEEK_SET))
+			return -1;
+		wos_prof_reads += 0x100;        /* read-ahead fills, bits 8-15 */
+		n = fread(wos_cd.data, 1, sizeof(wos_cd.data), f);
+		if (n < CD_FRAMESIZE_RAW)
+			return -1;
+		wos_cd.count = n / CD_FRAMESIZE_RAW;
+	}
+	memcpy(dest, wos_cd.data + (sector - wos_cd.first) * CD_FRAMESIZE_RAW, CD_FRAMESIZE_RAW);
+	return CD_FRAMESIZE_RAW;
+}
+#define cdread_normal cdread_normal_stdio
+#endif
+
 static int cdread_normal(FILE *f, unsigned int base, void *dest, int sector)
 {
 	int ret;
@@ -1109,6 +1144,9 @@ fail_io:
 	//SysPrintf("File IO error %d, base %u, sector %u\n", errno, base, sector);
 	return -1;
 }
+#ifdef __WARPOS__
+#undef cdread_normal
+#endif
 
 static int cdread_sub_mixed(FILE *f, unsigned int base, void *dest, int sector)
 {
@@ -1497,6 +1535,9 @@ static long CALLBACK ISOopen(void) {
 static long CALLBACK ISOclose(void) {
 	int i;
 
+#ifdef __WARPOS__
+	wos_cd.f = NULL;
+#endif
 	if (cdHandle != NULL) {
 		fclose(cdHandle);
 		cdHandle = NULL;

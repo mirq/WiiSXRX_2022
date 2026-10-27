@@ -278,10 +278,12 @@ void wos_video_frame_stats(void)
                 (unsigned long)(span / s_stat_frames) - st[WOS_PROF_GPU] - st[WOS_PROF_RCNT]
                     - st[WOS_PROF_IRQ] - st[WOS_PROF_MDEC] - st[WOS_PROF_GP1]);
         wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us",
-                st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xffff),
+                st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xff),
                 st[WOS_PROF_TEXCONV], st[WOS_PROF_TEXUP]);
-        wos_log("[prof] UploadScreen %lu us, %lu textures made", st[WOS_PROF_UPSCREEN],
-                (unsigned long)(wos_prof_reads >> 16));
+        wos_log("[prof] UploadScreen %lu us, %lu textures made, %lu cd fills; SysUpdate %lu us (input %lu)",
+                st[WOS_PROF_UPSCREEN], (unsigned long)(wos_prof_reads >> 16),
+                (unsigned long)((wos_prof_reads >> 8) & 0xff),
+                st[WOS_PROF_SYS], st[WOS_PROF_INPUT]);
         wos_prof_reads = 0;
         wos_log("[stats] %lu.%02lu fps, %lu presents, %lu late; per frame: upload %lu us, swap %lu us, wait %lu us",
                 fps100 / 100, fps100 % 100,

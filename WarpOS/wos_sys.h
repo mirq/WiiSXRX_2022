@@ -28,7 +28,7 @@ void     wos_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void     wos_log_flush(void);
 /* Where a frame's time goes: time-base ticks per stage, read without leaving
  * the PPC; the stats line turns them into us per frame and clears them. */
-enum { WOS_PROF_GPU, WOS_PROF_SPU, WOS_PROF_LACE, WOS_PROF_CDR, WOS_PROF_MDEC, WOS_PROF_RCNT, WOS_PROF_IRQ, WOS_PROF_GP1, WOS_PROF_READ, WOS_PROF_TEXCONV, WOS_PROF_TEXUP, WOS_PROF_UPSCREEN, WOS_PROF_N };
+enum { WOS_PROF_GPU, WOS_PROF_SPU, WOS_PROF_LACE, WOS_PROF_CDR, WOS_PROF_MDEC, WOS_PROF_RCNT, WOS_PROF_IRQ, WOS_PROF_GP1, WOS_PROF_READ, WOS_PROF_TEXCONV, WOS_PROF_TEXUP, WOS_PROF_UPSCREEN, WOS_PROF_SYS, WOS_PROF_INPUT, WOS_PROF_N };
 extern uint32_t wos_prof_reads;
 extern uint32_t wos_prof_ticks[WOS_PROF_N];
 static inline uint32_t wos_tb_lo(void)

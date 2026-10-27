@@ -388,12 +388,15 @@ void SysUpdate(void)
 {
     static unsigned quit_frames;
     unsigned act;
+    uint32_t t0 = wos_tb_lo(), t1;
 
     framesdone++;
     WOS_CRUMB_SET(1, framesdone);
     WOS_CRUMB_SET(2, psxRegs.pc);
     WOS_CRUMB(1);
+    t1 = wos_tb_lo();
     act = wos_input_poll(wos_video_window());
+    wos_prof_ticks[WOS_PROF_INPUT] += wos_tb_lo() - t1;
     WOS_CRUMB(2);
     if (act & WOS_ACT_FASTFWD) {
         frameLimit[0] = frameLimit[0] ? FRAMELIMIT_NONE : FRAMELIMIT_AUTO;
@@ -416,6 +419,7 @@ void SysUpdate(void)
     wos_video_frame_stats();
     wos_log_tick();
     WOS_CRUMB(3);
+    wos_prof_ticks[WOS_PROF_SYS] += wos_tb_lo() - t0;
 }
 
 /* From psxBranchTest every 64K calls (r3000a.c): a vblank that has not come
