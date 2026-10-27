@@ -342,6 +342,69 @@ unsigned int wos_xa_why[6];
 #define XA_WHY(n) break
 #endif
 
+/* Audio sectors of an image ripped as form 1: the subheader is zeroed and
+ * the last two of the 18 sound groups are EDC/ECC (Silent Hill's
+ * SLUS_007.07.bin is such an image). With ADPCM on, a sector whose 16 groups
+ * have XA's doubled parameter bytes is taken as audio again: the file and
+ * channel are the ones the game filters on, the coding follows from how far
+ * apart the audio sectors are (one in 4 at single speed is 37.8 kHz stereo),
+ * and the decoder makes up the two lost groups. */
+#ifdef __WARPOS__
+unsigned int wos_xa_rip[3];         /* rebuilt, waiting for the spacing, other spacing */
+#endif
+
+static int rip_looks_audio(const u8 *data)
+{
+	int g, i, quiet = 0;
+	for (g = 0; g < 16; g++) {
+		const u8 *h = data + g * 128;
+		if (memcmp(h, h + 4, 4) || memcmp(h + 8, h + 12, 4))
+			return 0;
+		for (i = 0; i < 8; i++)
+			if ((h[i] >> 4) > 3 || (h[i] & 15) > 12)
+				return 0;
+		for (i = 16; i < 128 && !h[i]; i++)
+			;
+		quiet += i == 128;
+	}
+	return quiet < 16;
+}
+
+static const u8 *rip_rebuild(const u8 *buf)
+{
+	static u8 sector[8 + 18 * 128];
+	static unsigned int last_lba;
+	static u8 coding = 0xff;
+	unsigned int lba = msf2sec(cdr.SetSectorPlay), gap = lba - last_lba;
+	unsigned int speed = (cdr.Mode & MODE_SPEED) ? 2 : 1;
+
+	last_lba = lba;
+	if (gap == 4 * speed)
+		coding = 0x01;
+	else if (gap < 64) {
+		/* other spacings would be 18.9 kHz or mono; not seen yet */
+#ifdef __WARPOS__
+		wos_xa_rip[2]++;
+#endif
+		return NULL;
+	}
+	if (coding == 0xff) {
+#ifdef __WARPOS__
+		wos_xa_rip[1]++;
+#endif
+		return NULL;
+	}
+	sector[0] = sector[4] = (cdr.Mode & MODE_SF) ? cdr.FilterFile : 1;
+	sector[1] = sector[5] = (cdr.Mode & MODE_SF) ? cdr.FilterChannel : 0;
+	sector[2] = sector[6] = 0x64;
+	sector[3] = sector[7] = coding;
+	memcpy(sector + 8, buf + 12, 16 * 128);
+#ifdef __WARPOS__
+	wos_xa_rip[0]++;
+#endif
+	return sector;
+}
+
 // cdrPlayReadInterrupt
 #define CDRPLAYREAD_INT(eCycle, isFirst) { \
 	u32 e_ = eCycle; \
@@ -1528,6 +1591,8 @@ static void cdrReadInterrupt(void)
 	u8 subqPos[4];
 	int read_ok;
 	int is_start;
+	const u8 *xa_src;
+	extern int xa_lost_groups;
 
 	*((u32*)subqPos) = *((u32*)cdr.SetSectorPlay);
 	msfiAdd(subqPos, cdr.SubqForwardSectors);
@@ -1563,6 +1628,16 @@ static void cdrReadInterrupt(void)
 		cdrUpdateTransferBuf(buf);
 
 	subhdr = (void *)(buf + 4);
+	xa_src = buf + 4;
+	if ((cdr.Mode & MODE_STRSND) && buf[3] == 2 && !*(const u32 *)(buf + 4) && !*(const u32 *)(buf + 8)
+	    && rip_looks_audio(buf + 12)) {
+		const u8 *r = rip_rebuild(buf);
+		if (r) {
+			xa_src = r;
+			subhdr = (void *)r;
+			xa_lost_groups = 2;
+		}
+	}
 	do {
 		// try to process as adpcm
 		if (!(cdr.Mode & MODE_STRSND))
@@ -1592,13 +1667,14 @@ static void cdrReadInterrupt(void)
 		if (Config.Xa)
 			XA_WHY(5);
 		is_start = !cdr.AdpcmActive;
-		cdr.AdpcmActive = !xa_decode_sector(&cdr.Xa, buf + 4, is_start);
+		cdr.AdpcmActive = !xa_decode_sector(&cdr.Xa, xa_src, is_start);
 #ifdef __WARPOS__
 		{ extern unsigned int wos_xa_sectors; wos_xa_sectors += cdr.AdpcmActive ? 1 : 0x10000; }
 #endif
 		if (cdr.AdpcmActive)
 			SPU_playADPCMchannel(&cdr.Xa, psxRegs.cycle, is_start);
 	} while (0);
+	xa_lost_groups = 0;
 
 	if ((cdr.Mode & MODE_SF) && (subhdr->mode & 0x44) == 0x44) // according to nocash
 		deliver_data = 0;

@@ -78,19 +78,60 @@ static __inline void ADPCM_DecodeBlock16( ADPCM_Decode_t *decp, u8 filter_range,
 static int headtable[4] = {0,2,8,10};
 
 //===========================================
+/* Sound groups at the end of the sector that are not there: an image ripped
+ * as form 1 keeps 2048 bytes of a form-2 audio sector (16 of its 18 groups)
+ * and has EDC/ECC where the last two were. Set by the caller per sector. */
+int xa_lost_groups;
+
+/* The lost groups' frames, made from the decoded ones: a stretch of the past
+ * whose lead-in looks most like the last frames before the gap continues
+ * them, so the pitch stays and the joint is smooth. */
+static void xa_fill_lost( xa_decode_t *xdp, int ngood ) {
+    enum { W = 32 };
+    int ch = xdp->stereo ? 2 : 1;
+    int n = ngood * 224 / ch, m = xa_lost_groups * 224 / ch;
+    short *pcm = xdp->pcm;
+    int lag, best = m, i;
+    unsigned int best_d = ~0u;
+
+    if (xa_lost_groups <= 0 || n < m + W)
+        return;
+    for (lag = m; lag <= n - W; lag += 2) {
+        unsigned int d = 0;
+        const short *a = pcm + (n - W) * ch, *b = pcm + (n - lag - W) * ch;
+        for (i = 0; i < W * ch && d < best_d; i += ch) {
+            int e = a[i] - b[i];
+            d += e < 0 ? -e : e;
+        }
+        if (d < best_d) {
+            best_d = d;
+            best = lag;
+        }
+    }
+    memmove(pcm + n * ch, pcm + (n - best) * ch, m * ch * sizeof(short));
+    i = (n + m - 1) * ch;
+    xdp->left.y0 = pcm[i];
+    xdp->left.y1 = pcm[i - ch];
+    if (ch == 2) {
+        xdp->right.y0 = pcm[i + 1];
+        xdp->right.y1 = pcm[i + 1 - ch];
+    }
+}
+
 static void xa_decode_data( xa_decode_t *xdp, const unsigned char *srcp ) {
     const u8    *sound_groupsp;
     const u8    *sound_datap, *sound_datap2;
     int         i, j, k, nbits;
     u16            data[4096], *datap;
     short        *destp;
+    int         ngroups = 18 - (xa_lost_groups > 0 ? xa_lost_groups : 0);
 
     destp = xdp->pcm;
     nbits = xdp->nbits == 4 ? 4 : 2;
 
     if (xdp->stereo) { // stereo
         if ((xdp->nbits == 8) && (xdp->freq == 37800)) { // level A
-            for (j=0; j < 18; j++) {
+            for (j=0; j < ngroups; j++) {
                 sound_groupsp = srcp + j * 128;        // sound groups header
                 sound_datap = sound_groupsp + 16;    // sound data just after the header
 
@@ -119,7 +160,7 @@ static void xa_decode_data( xa_decode_t *xdp, const unsigned char *srcp ) {
                 }
             }
         } else { // level B/C
-            for (j=0; j < 18; j++) {
+            for (j=0; j < ngroups; j++) {
                 sound_groupsp = srcp + j * 128;        // sound groups header
                 sound_datap = sound_groupsp + 16;    // sound data just after the header
 
@@ -153,7 +194,7 @@ static void xa_decode_data( xa_decode_t *xdp, const unsigned char *srcp ) {
         }
     } else { // mono
         if ((xdp->nbits == 8) && (xdp->freq == 37800)) { // level A
-            for (j=0; j < 18; j++) {
+            for (j=0; j < ngroups; j++) {
                 sound_groupsp = srcp + j * 128;        // sound groups header
                 sound_datap = sound_groupsp + 16;    // sound data just after the header
 
@@ -182,7 +223,7 @@ static void xa_decode_data( xa_decode_t *xdp, const unsigned char *srcp ) {
                 }
             }
         } else { // level B/C
-            for (j=0; j < 18; j++) {
+            for (j=0; j < ngroups; j++) {
                 sound_groupsp = srcp + j * 128;        // sound groups header
                 sound_datap = sound_groupsp + 16;    // sound data just after the header
 
@@ -216,6 +257,8 @@ static void xa_decode_data( xa_decode_t *xdp, const unsigned char *srcp ) {
             }
         }
     }
+    if (ngroups < 18)
+        xa_fill_lost( xdp, ngroups );
 }
 
 //============================================

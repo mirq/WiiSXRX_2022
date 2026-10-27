@@ -63,6 +63,11 @@ static int16_t             *s_ring;         /* RING_FRAMES * 2 samples */
 static uint32_t             s_write;        /* frames written; the ring index is & (RING_FRAMES-1) */
 static int                  s_open;
 
+/* For the [audio] line: frames fed, underruns (the player caught up and the
+ * writer was moved), the least queued at a feed, and calls that found the
+ * ring short (the SPU then mixes ahead). */
+unsigned int wos_au_fed, wos_au_under, wos_au_min = ~0u, wos_au_short, wos_au_feeds;
+
 /* Where AHI is playing, in frames into the ring: the hook's last word, read past
  * any stale copy of it in the PPC's cache. */
 static uint32_t play_frame(void)
@@ -85,6 +90,7 @@ static uint32_t ahead(void)
     if (d > RING_FRAMES / 2) {
         restart_writer(p);
         d = LEAD_FRAMES;
+        wos_au_under++;
     }
     return d;
 }
@@ -209,7 +215,10 @@ static int ahi_busy(void)
 {
     if (!s_open)
         return 1;           /* silent: never ask the SPU for more */
-    return ahead() > BUSY_FRAMES;
+    if (ahead() > BUSY_FRAMES)
+        return 1;
+    wos_au_short++;
+    return 0;
 }
 
 static int ahi_feed(void *data, int bytes)
@@ -223,7 +232,13 @@ static int ahi_feed(void *data, int bytes)
     frames = (uint32_t)bytes / FRAME_BYTES;
     if (frames > RING_FRAMES / 2)
         frames = RING_FRAMES / 2;
-    ahead();                /* re-sync the writer after a stall */
+    {
+        uint32_t d = ahead();   /* re-sync the writer after a stall */
+        if (d < wos_au_min)
+            wos_au_min = d;
+    }
+    wos_au_feeds++;
+    wos_au_fed += frames;
     w = s_write & (RING_FRAMES - 1);
     first = RING_FRAMES - w;
     if (first > frames)

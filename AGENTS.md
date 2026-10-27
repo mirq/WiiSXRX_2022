@@ -118,6 +118,11 @@ The log has three kinds of periodic line:
   - `bios/`, `memcards/`, `savestates/`
 - Test game: Silent Hill, in `Work:silenthill wos`. The path has a space, so
   quote it.
+- That image (`SLUS_007.07.bin`) was ripped as mode 2 form 1: the
+  subheaders are zero and the last 276 bytes of each sector are form-1
+  EDC/ECC. Its XA audio is still there in 16 of every sector's 18 sound groups.
+  `cdrom.c` (`rip_rebuild`) recognises those sectors and `decode_xa.c` makes up
+  the two lost groups; the `[prof] form-1 rip audio` line counts them.
 - Log: `Work:WiiStation/wiistation.log`.
 
 ## Build

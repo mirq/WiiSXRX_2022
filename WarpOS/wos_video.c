@@ -424,6 +424,14 @@ void wos_video_frame_stats(void)
                 st[WOS_PROF_SYS], st[WOS_PROF_INPUT]);
         wos_prof_reads = 0;
         {
+            extern unsigned int wos_au_fed, wos_au_under, wos_au_min, wos_au_short, wos_au_feeds;
+            wos_log("[audio] %lu frames fed in %lu ms (%lu feeds, %lu short), %lu underruns, least queued %ld",
+                    (unsigned long)wos_au_fed, (unsigned long)(span / 1000), (unsigned long)wos_au_feeds,
+                    (unsigned long)wos_au_short, (unsigned long)wos_au_under, (long)(int)wos_au_min);
+            wos_au_fed = wos_au_under = wos_au_short = wos_au_feeds = 0;
+            wos_au_min = ~0u;
+        }
+        {
             extern unsigned int wos_bt_calls, wos_bt_full, wos_xa_sectors;
             wos_log("[prof] branch tests per frame %lu, %lu of them full; xa sectors %lu played, %lu refused",
                     (unsigned long)(wos_bt_calls / s_stat_frames),
@@ -447,6 +455,12 @@ void wos_video_frame_stats(void)
                 wos_log("[prof] not xa: no strsnd %u, not form2 audio %u, filter %u, chan 0x80 %u, other chan %u, xa off %u",
                         wos_xa_why[0], wos_xa_why[1], wos_xa_why[2], wos_xa_why[3], wos_xa_why[4], wos_xa_why[5]);
                 memset(wos_xa_why, 0, sizeof wos_xa_why);
+                {
+                    extern unsigned int wos_xa_rip[3];
+                    wos_log("[prof] form-1 rip audio: %u sectors rebuilt, %u waiting for the spacing, %u at another spacing",
+                            wos_xa_rip[0], wos_xa_rip[1], wos_xa_rip[2]);
+                    memset(wos_xa_rip, 0, sizeof wos_xa_rip);
+                }
             }
         }
         wos_log("[stats] %lu.%02lu fps, %lu presents, %lu late; per frame: upload %lu us, swap %lu us, wait %lu us",
