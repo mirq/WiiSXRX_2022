@@ -419,9 +419,19 @@ void wos_video_frame_stats(void)
             wos_draws = 0;
             {
                 extern unsigned int wos_batch_why[6];
-                wos_log("[prof] batches end for: another GL call %u, texture %u, blend %u, depth %u, scale %u, full %u",
-                        wos_batch_why[0] / s_stat_frames, wos_batch_why[1] / s_stat_frames, wos_batch_why[2] / s_stat_frames,
-                        wos_batch_why[3] / s_stat_frames, wos_batch_why[4] / s_stat_frames, wos_batch_why[5] / s_stat_frames);
+                extern unsigned int wos_tex_seen[64], wos_tex_distinct, wos_tex_onoff, wos_tex_blend, wos_semi_abr[8];
+                wos_log("[prof] batches end for: another GL call %u, texture %u (%u of them texturing on/off, %u with the blend too), blend %u, depth %u, scale %u, full %u; %u textures switched between",
+                        wos_batch_why[0] / s_stat_frames, wos_batch_why[1] / s_stat_frames, wos_tex_onoff / s_stat_frames, wos_tex_blend / s_stat_frames,
+                        wos_batch_why[2] / s_stat_frames,
+                        wos_batch_why[3] / s_stat_frames, wos_batch_why[4] / s_stat_frames, wos_batch_why[5] / s_stat_frames,
+                        wos_tex_distinct);
+                wos_tex_onoff = wos_tex_blend = 0;
+                wos_log("[prof] two-pass textured primitives a frame by blend mode: 0:%u 1:%u 2:%u 3:%u 4:%u",
+                        wos_semi_abr[0] / s_stat_frames, wos_semi_abr[1] / s_stat_frames, wos_semi_abr[2] / s_stat_frames,
+                        wos_semi_abr[3] / s_stat_frames, wos_semi_abr[4] / s_stat_frames);
+                memset(wos_semi_abr, 0, sizeof wos_semi_abr);
+                memset(wos_tex_seen, 0, sizeof wos_tex_seen);
+                wos_tex_distinct = 0;
                 memset(wos_batch_why, 0, sizeof wos_batch_why);
 
             }
