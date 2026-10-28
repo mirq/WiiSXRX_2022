@@ -2886,6 +2886,9 @@ textureSubCacheEntryS *CheckTextureInSubSCache(
  tsg+=ClutKeyBucket(clutKey)*SOFFB;
 
  iMax=GETLE32(SUBCACHE_COUNT_PTR(tsg));
+#ifdef __WARPOS__
+ WOS_CRUMB2(80, iMax);
+#endif
  if(iMax)
   {
    i=iMax;
@@ -3490,11 +3493,20 @@ GLuint SelectSubTextureS(int TextureMode, unsigned int GivenClutId)
  // search cache
  iCache=0;
  newEntry=CheckTextureInSubSCache(TextureMode,clutKey,&iCache);
+#ifdef __WARPOS__
+ WOS_CRUMB2(81, iCache);
+#endif
 
  // cache full? compress and try again
  if(iCache==0xffff)
   {
+#ifdef __WARPOS__
+   WOS_CRUMB(82);
+#endif
    CompressTextureSpace();
+#ifdef __WARPOS__
+   WOS_CRUMB(83);
+#endif
    newEntry=CheckTextureInSubSCache(TextureMode,clutKey,&iCache);
   }
 
@@ -3513,12 +3525,18 @@ GLuint SelectSubTextureS(int TextureMode, unsigned int GivenClutId)
 
  // not found? upload texture and store infos in cache
  gTexName=uiStexturePage[iCache];
+#ifdef __WARPOS__
+ WOS_CRUMB2(84, iCache);
+#endif
  #ifdef DISP_DEBUG
 // sprintf(txtbuffer, "SelectSubTextureS 2 %d %d\r\n", iCache, gTexName);
 // DEBUG_print(txtbuffer,  DBG_CDR3);
  //writeLogFile(txtbuffer);
  #endif // DISP_DEBUG
  LoadSubTexFn(GlobalTexturePage,TextureMode,cx,cy);
+#ifdef __WARPOS__
+ WOS_CRUMB(89);
+#endif
  uiStexturePage[iCache]=gTexName;
  newEntry->drawInfo=PackDrawInfo(ubOpaqueDraw,gl_ux[8]);
  #ifdef DISP_DEBUG

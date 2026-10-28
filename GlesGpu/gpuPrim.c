@@ -1027,7 +1027,7 @@ static void SetRenderMode ( unsigned int DrawAttributes, BOOL bSCol )
         GLuint currTex;
         if ( bUsingTWin )       { currTex = LoadTextureWnd ( GlobalTexturePage, GlobalTextTP, ulClutID ); loadTextureType = TEX_TYPE_WIN; }
         else if ( bUsingMovie ) { currTex = LoadTextureMovie(); loadTextureType = TEX_TYPE_MOV; }
-        else                    { WOS_PROF(WOS_PROF_TEXSEL, currTex = SelectSubTextureS ( GlobalTextTP, ulClutID )); loadTextureType = TEX_TYPE_SUB; }
+        else                    { WOS_CRUMB(73); WOS_PROF(WOS_PROF_TEXSEL, currTex = SelectSubTextureS ( GlobalTextTP, ulClutID )); WOS_CRUMB(74); loadTextureType = TEX_TYPE_SUB; }
 
         glSetTextureType(gl_ux[8], loadTextureType, texChgType);
 

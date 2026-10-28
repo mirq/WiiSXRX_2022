@@ -2085,6 +2085,10 @@ long CALLBACK GL_GPUdmaChain(unsigned long * baseAddrL, unsigned long addr, uint
    int len = head >> 24;
 
    dmaWords += 1 + len;
+#ifdef __WARPOS__
+   WOS_CRUMB_SET(4, addr);                    /* the entry being drawn */
+   WOS_CRUMB2(72, len > 0 ? GETLE32(list + 1) : 0);
+#endif
    if (len > 0) GL_GPUwriteDataMem(list + 1, len);
    addr = head & 0xffffff;
 

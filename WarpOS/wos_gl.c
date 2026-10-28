@@ -213,10 +213,12 @@ static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLuby
         memset(s_conv_semi, 0, (size_t)w * h * 4);
         bgra = s_conv_semi;
     }
+    WOS_CRUMB2(87, (w << 16) | h);
     if (fmt == FMT_565)
         WOS_PROF(WOS_PROF_TEXUP, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, bgra));
     else
         WOS_PROF(WOS_PROF_TEXUP, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, bgra));
+    WOS_CRUMB(88);
     wos_prof_reads += 0x10000;      /* texture creations, in the high half */
     return name;
 }
@@ -504,8 +506,10 @@ int wosgl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
         wos_tex_texels += (unsigned)(cw * ch);
         WOS_PROF(WOS_PROF_TEXCONV, tt = split_texels((const GLubyte *)data, width, cw, ch, 0));
         glBindTexture(GL_TEXTURE_2D, t->main);
+        WOS_CRUMB2(85, (xoffset << 16) | yoffset);
         WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
                         MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main));
+        WOS_CRUMB2(86, (cw << 16) | ch);
         if ((tt & TEX_TYPE_1) && !t->semi)
             t->semi = make_plane(t->w, t->h, t->wraps, t->wrapt, NULL);
         if (t->semi) {
@@ -1065,6 +1069,7 @@ static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
             continue;
         if (!s_gs.valid || memcmp(&key, &s_bt.key, sizeof key)) {
             wos_draws++;
+            WOS_CRUMB(78);
             apply_key(&key);
             s_bt.key = key;
         }
@@ -1072,6 +1077,7 @@ static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
             ogx_draw_submitted_cb();
         t1 = wos_tb_lo();
         wos_prof_ticks[WOS_PROF_STATE] += t1 - t0;
+        WOS_CRUMB(75);
         glBegin(MGL_FLATFAN);
         if (!color_enabled || one_color)
             emit_color(&ps, color_enabled ? v[order[0]].c : s_lcol);
@@ -1085,7 +1091,9 @@ static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
         }
         t0 = wos_tb_lo();
         wos_prof_ticks[WOS_PROF_DRAW] += t0 - t1;
+        WOS_CRUMB(76);
         glEnd();
+        WOS_CRUMB(77);
         wos_prof_ticks[WOS_PROF_GLEND] += wos_tb_lo() - t0;
     }
 }
@@ -1130,6 +1138,7 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
                               key.blend != s_bt.key.blend ? 2 : key.zfunc != s_bt.key.zfunc ? 3 : 4]++;
             wosgl_batch_end();
             t0 = wos_tb_lo();
+            WOS_CRUMB(78);
             apply_key(&key);
             wos_draws++;
             glBegin(GL_TRIANGLES);
