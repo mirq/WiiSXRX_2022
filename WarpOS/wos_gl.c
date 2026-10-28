@@ -88,7 +88,29 @@ typedef struct {
     int    pw, ph;          /* the planes' real size: w, h but for padded 565 */
     GLint  wraps, wrapt;
     WosPlanes spare[TEX_SPARES];  /* [0] the most recent */
+    int    cell;            /* 1..ATLAS_CELLS: a cell of the atlas, 0: own planes */
 } WosTex;
+
+/* GlesGpu's sorted texture cache spreads its sub-textures over 256 x 256
+ * pages, each a GL texture: every draw on another page was a texture switch,
+ * and with it a new MiniGL record (some 250 a frame in Crash's long views).
+ * The pages live as cells of one 1024 x 512 texture instead (MiniGL's
+ * partial-update path takes up to that size); the draws move their texture
+ * coordinates into the cell. The pages clamp (GlesGpu's iClampType) and
+ * their sub-textures already sit edge to edge inside a page, so the cells
+ * add no new kind of edge. Anything but filling a page piece by piece
+ * (a whole new image, a framebuffer copy, a wrap mode) gives the texture
+ * its own planes again. SetEnv WSX_ATLAS 0: no atlas. */
+#define ATLAS_W 1024
+#define ATLAS_H 512
+#define ATLAS_CELLS 8
+static struct {
+    int    state;           /* 0 not yet, 1 made, -1 off */
+    GLuint main, semi, one;
+    unsigned char used[ATLAS_CELLS];
+} s_atlas;
+#define CELL_X(c) ((((c) - 1) % (ATLAS_W / 256)) * 256)
+#define CELL_Y(c) ((((c) - 1) / (ATLAS_W / 256)) * 256)
 
 static WosTex s_tex[MAX_TEX];
 static int    s_cur;                    /* the bound (opengx) texture */
@@ -242,9 +264,22 @@ static void drop_one(WosTex *t)
     }
 }
 
+/* Leave the atlas: the planes are the atlas's, not the texture's. */
+static void detach_cell(WosTex *t)
+{
+    if (!t->cell)
+        return;
+    wosgl_gl_touched();
+    s_atlas.used[t->cell - 1] = 0;
+    t->cell = 0;
+    t->main = t->semi = t->one = 0;
+    t->w = t->h = t->pw = t->ph = 0;
+}
+
 static void free_planes(WosTex *t)
 { wosgl_gl_touched();
     int i;
+    detach_cell(t);
     drop_one(t);
     if (t->main) glDeleteTextures(1, &t->main);
     if (t->semi) glDeleteTextures(1, &t->semi);
@@ -274,8 +309,9 @@ static int switch_planes(WosTex *t, int w, int h, int fmt)
     WosPlanes cur, found;
     int i, k = -1;
 
-    if (t->main && t->w == w && t->h == h && t->fmt == fmt)
+    if (t->main && t->w == w && t->h == h && t->fmt == fmt && !t->cell)
         return 1;
+    detach_cell(t);
     drop_one(t);
     for (i = 0; i < TEX_SPARES; i++)
         if (t->spare[i].main && t->spare[i].w == w && t->spare[i].h == h && t->spare[i].fmt == fmt) {
@@ -400,6 +436,11 @@ void wosgl_TexParameteri(GLenum target, GLenum pname, GLint param)
     if (pname == GL_TEXTURE_WRAP_S || pname == GL_TEXTURE_WRAP_T) {
         GLint w = wrap_conv(param);
         if (pname == GL_TEXTURE_WRAP_S) t->wraps = w; else t->wrapt = w;
+        if (t->cell) {
+            if (w != GL_CLAMP)
+                detach_cell(t);     /* it repeats: its texels are lost, as with a new size */
+            return;
+        }
         if (t->main) {
             glBindTexture(GL_TEXTURE_2D, t->main);
             glTexParameteri(GL_TEXTURE_2D, pname, w);
@@ -449,6 +490,7 @@ static int define_texture(int w, int h, const void *data, int rgb24)
     WosTex *t = &s_tex[s_cur];
     int type;
 
+    detach_cell(t);
     if (!s_cur || !t->used || w <= 0 || h <= 0 || !ensure_conv(w * h))
         return 0;
     if (rgb24) {
@@ -544,33 +586,80 @@ int wosgl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
         wos_tex_subs++;
         wos_tex_texels += (unsigned)(cw * ch);
         WOS_PROF(WOS_PROF_TEXCONV, tt = split_texels((const GLubyte *)data, width, cw, ch, 0));
-        glBindTexture(GL_TEXTURE_2D, t->main);
-        WOS_CRUMB2(85, (xoffset << 16) | yoffset);
-        WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
-                        MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main));
-        WOS_CRUMB2(86, (cw << 16) | ch);
-        if ((tt & TEX_TYPE_1) && !t->semi)
-            t->semi = make_plane(t->w, t->h, t->wraps, t->wrapt, NULL);
-        if (t->semi) {
-            glBindTexture(GL_TEXTURE_2D, t->semi);
-            WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
-                            MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi));
-        }
-        /* A one plane made before has the rest of the texels; a new one
-         * would not, so only an existing one follows a partial upload. */
-        if (t->one) {
-            glBindTexture(GL_TEXTURE_2D, t->one);
-            WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
-                            MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_one));
+        {
+            int ux = xoffset + (t->cell ? CELL_X(t->cell) : 0);
+            int uy = yoffset + (t->cell ? CELL_Y(t->cell) : 0);
+            glBindTexture(GL_TEXTURE_2D, t->main);
+            WOS_CRUMB2(85, (xoffset << 16) | yoffset);
+            WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, ux, uy, cw, ch,
+                            MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main));
+            WOS_CRUMB2(86, (cw << 16) | ch);
+            if ((tt & TEX_TYPE_1) && !t->semi)
+                t->semi = make_plane(t->w, t->h, t->wraps, t->wrapt, NULL);
+            if (t->semi) {
+                glBindTexture(GL_TEXTURE_2D, t->semi);
+                WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, ux, uy, cw, ch,
+                                MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi));
+            }
+            /* A one plane made before has the rest of the texels; a new one
+             * would not, so only an existing one follows a partial upload. */
+            if (t->one) {
+                glBindTexture(GL_TEXTURE_2D, t->one);
+                WOS_PROF(WOS_PROF_TEXUP, glTexSubImage2D(GL_TEXTURE_2D, 0, ux, uy, cw, ch,
+                                MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_one));
+            }
         }
     }
     return tt;
+}
+
+/* A free cell of the atlas for the bound texture (made on first use),
+ * cleared: the page fills piece by piece and must not show the last one's. */
+static int atlas_take(WosTex *t)
+{
+    int c;
+    if (s_atlas.state == 0) {
+        s_atlas.state = wos_env_int("WSX_ATLAS", 1) ? 1 : -1;
+        if (s_atlas.state > 0) {
+            s_atlas.main = make_plane(ATLAS_W, ATLAS_H, GL_CLAMP, GL_CLAMP, NULL);
+            s_atlas.semi = make_plane(ATLAS_W, ATLAS_H, GL_CLAMP, GL_CLAMP, NULL);
+            s_atlas.one = make_plane(ATLAS_W, ATLAS_H, GL_CLAMP, GL_CLAMP, NULL);
+            if (!s_atlas.main || !s_atlas.semi || !s_atlas.one)
+                s_atlas.state = -1;
+        }
+    }
+    if (s_atlas.state < 0 || !ensure_conv(256 * 256))
+        return 0;
+    for (c = 0; c < ATLAS_CELLS && s_atlas.used[c]; c++)
+        ;
+    if (c == ATLAS_CELLS)
+        return 0;
+    s_atlas.used[c] = 1;
+    t->cell = c + 1;
+    t->main = s_atlas.main;
+    t->semi = s_atlas.semi;
+    t->one = s_atlas.one;
+    t->w = t->pw = 256;
+    t->h = t->ph = 256;
+    t->fmt = FMT_BGRA;
+    memset(s_conv_semi, 0, 256 * 256 * 4);
+    glBindTexture(GL_TEXTURE_2D, s_atlas.main);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, CELL_X(t->cell), CELL_Y(t->cell), 256, 256, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi);
+    glBindTexture(GL_TEXTURE_2D, s_atlas.semi);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, CELL_X(t->cell), CELL_Y(t->cell), 256, 256, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi);
+    glBindTexture(GL_TEXTURE_2D, s_atlas.one);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, CELL_X(t->cell), CELL_Y(t->cell), 256, 256, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi);
+    return 1;
 }
 
 void wosgl_InitRGBATextures(GLsizei width, GLsizei height)
 { wosgl_gl_touched();
     WosTex *t = &s_tex[s_cur];
     if (!s_cur || !t->used || width <= 0 || height <= 0)
+        return;
+    if (t->cell && width == 256 && height == 256)
+        return;                 /* reused: its texels are replaced before use */
+    if (width == 256 && height == 256 && !t->main && atlas_take(t))
         return;
     if (switch_planes(t, width, height, FMT_BGRA))
         return;                 /* reused: its texels are replaced before use */
@@ -663,6 +752,8 @@ static int capture_into_bound(int srcW, int srcH, int intensity)
     GLubyte *rgba;
     int w, h, i;
 
+    if (t->cell)
+        return 0;               /* not into a cache page */
     if (!s_cur || !t->main || t->w <= 0 || t->h <= 0 || srcW <= 0 || srcH <= 0 || t->fmt != FMT_BGRA)
         return 0;
     drop_one(t);
@@ -709,6 +800,8 @@ void wosgl_CopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yo
     int i, fbh = wos_video_height();
     (void)target; (void)level;
 
+    if (t->cell)
+        return;                 /* not into a cache page */
     if (!s_cur || !t->main || width <= 0 || height <= 0 || !ensure_conv(width * height) || t->fmt != FMT_BGRA)
         return;
     drop_one(t);
@@ -1146,7 +1239,7 @@ static int s_flat = -1;
 
 static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
                       int texen, int color_enabled, int one_color, int passes,
-                      float ss, float ts)
+                      float ss, float ts, float os, float ot)
 {
     static const int FAN3[3] = { 0, 1, 2 }, FAN4[4] = { 0, 1, 3, 2 };
     const int *fan = (mode == GL_TRIANGLE_STRIP && n == 4) ? FAN4 : FAN3;
@@ -1208,7 +1301,7 @@ static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
             if (color_enabled && !one_color)
                 emit_color(&ps, p->c);
             if (texen)
-                glTexCoord2f(p->s * ss, p->t * ts);
+                glTexCoord2f(os + p->s * ss, ot + p->t * ts);
             glVertex3f(xo + p->x * xs, yo + p->y * ys, zo + p->z * zs);
         }
         t0 = wos_tb_lo();
@@ -1230,14 +1323,19 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
     WosKey key;
     int pass, i;
     int passes = (texen && s_blend_enabled) ? 2 : 1;
-    float ss = 1.0f, ts = 1.0f;
+    float ss = 1.0f, ts = 1.0f, os = 0.0f, ot = 0.0f;
     const WosTex *bt = &s_tex[s_cur];
     const int *tri = (mode == GL_TRIANGLE_STRIP && n == 4) ? TRI2 : TRI1;
     int nt = (mode == GL_TRIANGLE_STRIP && n == 4) ? 6 : 3;
 
     if (s_batching < 0)
         s_batching = wos_env_int("WSX_GLBATCH", 1);
-    if (texen && bt->pw > 0 && bt->ph > 0 && (bt->pw != bt->w || bt->ph != bt->h)) {
+    if (texen && bt->cell) {
+        ss = 256.0f / ATLAS_W;
+        ts = 256.0f / ATLAS_H;
+        os = (float)CELL_X(bt->cell) / ATLAS_W;
+        ot = (float)CELL_Y(bt->cell) / ATLAS_H;
+    } else if (texen && bt->pw > 0 && bt->ph > 0 && (bt->pw != bt->w || bt->ph != bt->h)) {
         ss = (float)bt->w / (float)bt->pw;
         ts = (float)bt->h / (float)bt->ph;
     }
@@ -1245,7 +1343,7 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
     if (s_flat < 0)
         s_flat = wos_env_int("WSX_GLFLAT", 1);
     if (s_flat && s_proj_state == 2 && s_mv_identity && s_vp[2] > 0 && s_vp[3] > 0) {
-        draw_flat(mode, v, order, n, texen, color_enabled, one_color, passes, ss, ts);
+        draw_flat(mode, v, order, n, texen, color_enabled, one_color, passes, ss, ts, os, ot);
         return;
     }
 
@@ -1279,7 +1377,7 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
             if (color_enabled && !one_color)
                 emit_color(&ps, p->c);
             if (texen)
-                glTexCoord2f(p->s * ss, p->t * ts);
+                glTexCoord2f(os + p->s * ss, ot + p->t * ts);
             glVertex3f(p->x, p->y, p->z);
         }
         s_bt.n += nt;
