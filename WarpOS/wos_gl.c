@@ -105,6 +105,12 @@ static int    s_has_scale2;             /* MiniGL can scale the texture stage by
 static int    s_has_rsub;               /* MiniGL can blend B - F */
 static int    s_state_ok;
 static GLint  s_scissor[4];
+/* The projection and viewport, for the draws that map their vertices to
+ * the screen themselves (see draw): an ortho on identity matrices only. */
+static int    s_proj_state;             /* 0 unknown, 1 identity, 2 the ortho below */
+static int    s_mv_identity = 1;
+static float  s_ortho[6];               /* left right bottom top near far */
+static GLint  s_vp[4];
 static int    s_scissor_on;
 
 void (*ogx_draw_submitted_cb)(void);
@@ -707,7 +713,11 @@ void wosgl_ClearFramebuffer(void)
 
 /* opengx's texture cache: nothing to reset over MiniGL. */
 void resetTexCacheInfo(void) {}
-void wosgl_Viewport(GLint x, GLint y, GLsizei width, GLsizei height) { wosgl_gl_touched(); glViewport(x, y, width, height); }
+void wosgl_Viewport(GLint x, GLint y, GLsizei width, GLsizei height)
+{ wosgl_gl_touched();
+    s_vp[0] = x; s_vp[1] = y; s_vp[2] = width; s_vp[3] = height;
+    glViewport(x, y, width, height);
+}
 
 void wosgl_ClearColor2(unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha)
 {
@@ -743,16 +753,30 @@ void wosgl_MatrixMode(GLenum mode)
 }
 void wosgl_LoadIdentity(void)
 { wosgl_gl_touched();
+    if (s_matrix_mode == GL_PROJECTION) s_proj_state = 1;
+    else if (s_matrix_mode == GL_MODELVIEW) s_mv_identity = 1;
     if (s_matrix_mode != GL_TEXTURE)
         glLoadIdentity();
 }
 void wosgl_Ortho(int left, int right, int bottom, int top, int near_val, int far_val)
 { wosgl_gl_touched();
+    if (s_matrix_mode == GL_PROJECTION && s_proj_state == 1 && right != left && top != bottom &&
+        far_val != near_val) {
+        s_ortho[0] = left; s_ortho[1] = right; s_ortho[2] = bottom;
+        s_ortho[3] = top; s_ortho[4] = near_val; s_ortho[5] = far_val;
+        s_proj_state = 2;
+    } else if (s_matrix_mode == GL_PROJECTION) {
+        s_proj_state = 0;
+    } else if (s_matrix_mode == GL_MODELVIEW) {
+        s_mv_identity = 0;
+    }
     glOrtho((GLdouble)left, (GLdouble)right, (GLdouble)bottom, (GLdouble)top,
             (GLdouble)near_val, (GLdouble)far_val);
 }
 void wosgl_Scalef(GLfloat x, GLfloat y, GLfloat z)
 { wosgl_gl_touched();
+    if (s_matrix_mode == GL_PROJECTION) s_proj_state = 0;
+    else if (s_matrix_mode == GL_MODELVIEW) s_mv_identity = 0;
     if (s_matrix_mode != GL_TEXTURE)
         glScalef(x, y, z);
 }
@@ -830,8 +854,14 @@ static void batch_close(void);
 
 /* Everything but a draw that touches GL ends the open batch first, and
  * the state the draws set is no longer known. */
+/* why batches end: [0] another GL call, [1] texture, [2] blend, [3] depth
+ * function, [4] texture scale, [5] full */
+unsigned int wos_batch_why[6];
+
 void wosgl_gl_touched(void)
 {
+    if (s_bt.open)
+        wos_batch_why[0]++;
     batch_close();
     s_gs.valid = 0;
 }
@@ -1002,6 +1032,64 @@ static void emit_color(const WosPass *ps, const GLubyte *c)
     glColor4f(r, g, b, ps->alpha);
 }
 
+/* MiniGL's MGL_FLATFAN takes vertices already on the screen and appends
+ * them as screen-space triangles: 6 dwords a vertex and a short record
+ * header, where its transformed path writes 10 and a 76-dword header per
+ * draw over the bus to VRAM (~61 MB/s). The 2D ortho GlesGpu sets is
+ * applied here instead. SetEnv WSX_GLFLAT 0: the transformed path. */
+static int s_flat = -1;
+
+static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
+                      int texen, int color_enabled, int one_color, int passes,
+                      float ss, float ts)
+{
+    static const int FAN3[3] = { 0, 1, 2 }, FAN4[4] = { 0, 1, 3, 2 };
+    const int *fan = (mode == GL_TRIANGLE_STRIP && n == 4) ? FAN4 : FAN3;
+    int nf = (mode == GL_TRIANGLE_STRIP && n == 4) ? 4 : 3;
+    float fbh = (float)wos_video_height();
+    float xs = (float)s_vp[2] / (s_ortho[1] - s_ortho[0]);
+    float ys = (float)s_vp[3] / (s_ortho[2] - s_ortho[3]);
+    float xo = (float)s_vp[0] - s_ortho[0] * xs;
+    float yo = (fbh - (float)s_vp[1] - (float)s_vp[3]) - s_ortho[3] * ys;
+    /* window z = 0.5 + 0.5 * ndc z; ndc z = -(2z - (f + n)) / (f - n) */
+    float zs = -1.0f / (s_ortho[5] - s_ortho[4]);
+    float zo = 0.5f + 0.5f * (s_ortho[5] + s_ortho[4]) / (s_ortho[5] - s_ortho[4]);
+    WosPass ps;
+    WosKey key;
+    int pass, i;
+
+    wosgl_batch_end();          /* a transformed batch may still be open */
+    for (pass = 0; pass < passes; pass++) {
+        uint32_t t0 = wos_tb_lo(), t1;
+        if (!compute_state(texen, color_enabled, pass, &ps, &key))
+            continue;
+        if (!s_gs.valid || memcmp(&key, &s_bt.key, sizeof key)) {
+            wos_draws++;
+            apply_key(&key);
+            s_bt.key = key;
+        }
+        if (ogx_draw_submitted_cb)
+            ogx_draw_submitted_cb();
+        t1 = wos_tb_lo();
+        wos_prof_ticks[WOS_PROF_STATE] += t1 - t0;
+        glBegin(MGL_FLATFAN);
+        if (!color_enabled || one_color)
+            emit_color(&ps, color_enabled ? v[order[0]].c : s_lcol);
+        for (i = 0; i < nf; i++) {
+            const WosVtx *p = &v[order[fan[i]]];
+            if (color_enabled && !one_color)
+                emit_color(&ps, p->c);
+            if (texen)
+                glTexCoord2f(p->s * ss, p->t * ts);
+            glVertex3f(xo + p->x * xs, yo + p->y * ys, zo + p->z * zs);
+        }
+        t0 = wos_tb_lo();
+        wos_prof_ticks[WOS_PROF_DRAW] += t0 - t1;
+        glEnd();
+        wos_prof_ticks[WOS_PROF_GLEND] += wos_tb_lo() - t0;
+    }
+}
+
 /* Draw `n` of the primitive's vertices, in `order`, as `mode`: a strip of
  * 4 goes in as two triangles, so that primitives can share a glBegin. */
 static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
@@ -1024,12 +1112,22 @@ static void draw(GLenum mode, const WosVtx *v, const int *order, int n,
         ts = (float)bt->h / (float)bt->ph;
     }
 
+    if (s_flat < 0)
+        s_flat = wos_env_int("WSX_GLFLAT", 1);
+    if (s_flat && s_proj_state == 2 && s_mv_identity && s_vp[2] > 0 && s_vp[3] > 0) {
+        draw_flat(mode, v, order, n, texen, color_enabled, one_color, passes, ss, ts);
+        return;
+    }
+
     for (pass = 0; pass < passes; pass++) {
         uint32_t t0 = wos_tb_lo(), t1;
         if (!compute_state(texen, color_enabled, pass, &ps, &key))
             continue;
         if (!s_bt.open || !s_batching || s_bt.n + nt > BATCH_MAX ||
             memcmp(&key, &s_bt.key, sizeof key)) {
+            if (s_bt.open)
+                wos_batch_why[s_bt.n + nt > BATCH_MAX ? 5 : key.tex != s_bt.key.tex ? 1 :
+                              key.blend != s_bt.key.blend ? 2 : key.zfunc != s_bt.key.zfunc ? 3 : 4]++;
             wosgl_batch_end();
             t0 = wos_tb_lo();
             apply_key(&key);

@@ -416,6 +416,14 @@ void wos_video_frame_stats(void)
             wos_log("[prof] MiniGL: state %lu us, vertices %lu us, glEnd %lu us, %lu draws a frame",
                     st[WOS_PROF_STATE], st[WOS_PROF_DRAW], st[WOS_PROF_GLEND], (unsigned long)(wos_draws / s_stat_frames));
             wos_draws = 0;
+            {
+                extern unsigned int wos_batch_why[6];
+                wos_log("[prof] batches end for: another GL call %u, texture %u, blend %u, depth %u, scale %u, full %u",
+                        wos_batch_why[0] / s_stat_frames, wos_batch_why[1] / s_stat_frames, wos_batch_why[2] / s_stat_frames,
+                        wos_batch_why[3] / s_stat_frames, wos_batch_why[4] / s_stat_frames, wos_batch_why[5] / s_stat_frames);
+                memset(wos_batch_why, 0, sizeof wos_batch_why);
+
+            }
             wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us, %lu partial uploads of %lu texels a frame",
                     st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xff),
                     st[WOS_PROF_TEXCONV], st[WOS_PROF_TEXUP],
