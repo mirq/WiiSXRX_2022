@@ -108,42 +108,75 @@ static int harmless(u32 op)
 }
 
 /* Checks the block from start up to its last instruction; the pcs it may go
- * on to are returned: two for a conditional branch, one for j/jal, none
- * (meaning "any") for jr. *br is the branch's address. Returns 0 if the
- * block has another effect. */
-static int check_block(u32 start, u32 next, u32 *br, u32 *sum)
+ * on to are *t1 and *t2: two for a conditional branch, one for j/jal; *any
+ * is set for jr (meaning "any"). *br is the branch's address. Returns 0 if
+ * the block has another effect. */
+static int scan_block(u32 start, u32 *br, u32 *t1, u32 *t2, int *any, u32 *sum)
 {
     u32 a = start, op;
     int i;
     for (i = 0; i < MAXI; i++, a += 4) {
-        u32 o, rs, rt, f, t1 = 0, t2 = 0, ds;
-        int any = 0;
+        u32 o, rt, f, ds;
         if (!fetch(a, &op))
             return 0;
         *sum = *sum * 31 + op;
-        o = op >> 26; rs = (op >> 21) & 31; rt = (op >> 16) & 31; f = op & 63;
+        o = op >> 26; rt = (op >> 16) & 31; f = op & 63;
+        *any = 0;
         if (o == 0x04 || o == 0x05 || o == 0x06 || o == 0x07 || o == 0x01) {
             if (o == 0x01 && rt != 0x00 && rt != 0x01 && rt != 0x10 && rt != 0x11)
                 return 0;
-            t1 = a + 4 + ((s32)(s16)(op & 0xffff) << 2);
-            t2 = a + 8;
+            *t1 = a + 4 + ((s32)(s16)(op & 0xffff) << 2);
+            *t2 = a + 8;
         } else if (o == 0x02 || o == 0x03) {
-            t1 = t2 = ((a + 4) & 0xf0000000) | ((op & 0x03ffffff) << 2);
+            *t1 = *t2 = ((a + 4) & 0xf0000000) | ((op & 0x03ffffff) << 2);
         } else if (o == 0x00 && (f == 0x08 || f == 0x09)) {
-            any = 1;
+            *any = 1;
         } else {
             if (!harmless(op))
                 return 0;
             continue;
         }
-        (void)rs;
         if (!fetch(a + 4, &ds) || !harmless(ds))
             return 0;
         *sum = *sum * 31 + ds;
         *br = a;
-        return any || next == t1 || next == t2;
+        return 1;
     }
     return 0;
+}
+
+static int check_block(u32 start, u32 next, u32 *br, u32 *sum)
+{
+    u32 t1 = 0, t2 = 0;
+    int any;
+    if (!scan_block(start, br, &t1, &t2, &any, sum))
+        return 0;
+    return any || next == t1 || next == t2;
+}
+
+/* A trace that repeats one pc: the loop may still have several blocks, as
+ * only backward branches take the branch test while the finder looks
+ * (PsyQ's VSync() leaves its first block by a forward branch). Follows
+ * both ways out of each block, up to MAXP blocks, for a path of harmless
+ * blocks back to entry; *br/*op is the branch that closes it. Blocks with
+ * other effects (the timeout's printf) are ways out of the loop. */
+static int loop_back(u32 a, u32 entry, int depth, u32 *br, u32 *op, u32 *sum)
+{
+    u32 b, t1 = 0, t2 = 0;
+    int any;
+    if (!scan_block(a, &b, &t1, &t2, &any, sum) || any)
+        return 0;
+    if (t1 == entry || t2 == entry) {
+        if (entry > b || !fetch(b, op))
+            return 0;
+        *br = b;
+        return 1;
+    }
+    if (!depth)
+        return 0;
+    if (t1 > a && t1 <= b + 8 + 4 * MAXI * MAXP && loop_back(t1, entry, depth - 1, br, op, sum))
+        return 1;
+    return t2 != t1 && loop_back(t2, entry, depth - 1, br, op, sum);
 }
 
 static void analyse(void)
@@ -160,6 +193,24 @@ static void analyse(void)
     }
     if (p > MAXP)
         return;
+    if (p == 1) {
+        u32 b, op;
+        WosIdle *w;
+        int j;
+        if (!loop_back(s_trace[0], s_trace[0], MAXP - 1, &b, &op, &sum))
+            return;
+        for (j = 0; j < WOS_IDLE_SLOTS; j++)
+            if (wos_idle[j].pc == s_trace[0] && wos_idle[j].pred == s_trace[0])
+                return;
+        w = &wos_idle[s_slot];
+        s_slot = (s_slot + 1) % WOS_IDLE_SLOTS;
+        w->pc = w->pred = s_trace[0];
+        w->br = b;
+        w->op = op;
+        w->skips = 0;
+        wos_idle_found++;
+        return;
+    }
     for (i = 0; i < p; i++)
         if (!check_block(s_trace[i], s_trace[(i + 1) % p], &br[i], &sum))
             return;
