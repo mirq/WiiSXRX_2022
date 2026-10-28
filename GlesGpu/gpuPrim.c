@@ -1725,6 +1725,9 @@ int UploadScreen ( int Position )
 
         if (clearMovieGarbageFlg == 1 && clearMovieGarbageCnt++ < 3)
         {
+#ifdef __WARPOS__
+            { extern unsigned int wos_vram_gen; wos_vram_gen++; }
+#endif
             int realMovieHeight = clearMovieGarbageY1 - clearMovieGarbageY0;
             int clearH = (xrUploadArea.y1 - xrUploadArea.y0 - realMovieHeight);
 

@@ -227,6 +227,23 @@ unsigned short CLUTMASK      = 0x7fff;
 unsigned short CLUTYMASK     = 0x1ff;
 unsigned short MAXSORTTEX    = MAXSORTTEX_MAX;
 
+#ifdef __WARPOS__
+/* The palette fingerprint hashes 256 colours for an 8-bit texture on every
+ * textured primitive (~1.3 ms a frame in a Crash 1 long view on the 7410).
+ * The last palettes are kept with their fingerprint: when the VRAM still
+ * holds the same colours (a compare, no multiplies) the fingerprint is the
+ * same. Exact: a changed palette always hashes again. */
+#define CLUT_MEMO 8
+static struct {
+ unsigned int id;           /* raw clut id | mode << 16 | 1 << 31: valid */
+ uint64_t key;              /* ClutKeyBuild without the semi-transparent bit */
+ unsigned int gen;          /* wos_vram_gen when last checked */
+ unsigned int pal[128];     /* the colours, as 32-bit words */
+} s_clutMemo[CLUT_MEMO];
+extern unsigned int wos_vram_gen;
+static unsigned int s_clutMemoNext;
+#endif
+
 static uint64_t BuildClutCacheKey(unsigned int rawClutId,int textureMode,
                                   int drawSemiTrans)
 {
@@ -239,6 +256,41 @@ static uint64_t BuildClutCacheKey(unsigned int rawClutId,int textureMode,
 
    palette=psxVuw+cx+(cy*1024);
   }
+#ifdef __WARPOS__
+ if(palette)
+  {
+   /* the palette is 16-bit aligned only: compare it as halfwords */
+   const unsigned short *pw=(const unsigned short *)palette;
+   unsigned int words=textureMode==1 ? 128U : 8U, id=0x80000000U|(rawClutId&0xffffU)|((unsigned)textureMode<<16);
+   unsigned int i,j;
+   for(i=0;i<CLUT_MEMO;i++)
+    if(s_clutMemo[i].id==id)
+     {
+      const unsigned short *m=(const unsigned short *)s_clutMemo[i].pal;
+      /* VRAM unchanged since the last check: the colours are too */
+      if(s_clutMemo[i].gen==wos_vram_gen)
+       return s_clutMemo[i].key|(drawSemiTrans ? CLUT_KEY_SEMITRANS : 0);
+      for(j=0;j<words*2 && m[j]==pw[j];j++)
+       ;
+      if(j==words*2)
+       {
+        s_clutMemo[i].gen=wos_vram_gen;
+        return s_clutMemo[i].key|(drawSemiTrans ? CLUT_KEY_SEMITRANS : 0);
+       }
+      break;
+     }
+   if(i==CLUT_MEMO)
+    {
+     i=s_clutMemoNext;
+     s_clutMemoNext=(s_clutMemoNext+1)%CLUT_MEMO;
+    }
+   s_clutMemo[i].id=id;
+   s_clutMemo[i].gen=wos_vram_gen;
+   s_clutMemo[i].key=ClutKeyBuild(rawClutId,textureMode,0,palette);
+   memcpy(s_clutMemo[i].pal,pw,words*4);
+   return s_clutMemo[i].key|(drawSemiTrans ? CLUT_KEY_SEMITRANS : 0);
+  }
+#endif
  return ClutKeyBuild(rawClutId,textureMode,drawSemiTrans,palette);
 }
 
@@ -583,9 +635,17 @@ void CleanupTextureStore()
 // Reset textures in game...
 ////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+unsigned int wos_vram_gen;      /* bumped on every VRAM change the cache hears of */
+#define WOS_VRAM_CHANGED() (wos_vram_gen++)
+#else
+#define WOS_VRAM_CHANGED() ((void)0)
+#endif
+
 void ResetTextureArea(BOOL bDelTex)
 {
  int i,j;textureSubCacheEntryS * tss;EXLong * lu;
+ WOS_VRAM_CHANGED();
  textureWndCacheEntry * tsx;
  //----------------------------------------------------//
 
@@ -634,6 +694,7 @@ void ResetTextureArea(BOOL bDelTex)
 void InvalidateWndTextureArea(int X,int Y,int W, int H)
 {
  int i,px1,px2,py1,py2,iYM=1;
+ WOS_VRAM_CHANGED();
  textureWndCacheEntry * tsw=wcWndtexStore;
 
  W+=X-1;
@@ -725,6 +786,7 @@ void MarkFree(textureSubCacheEntryS * tsx)
 void InvalidateSubSTextureArea(int X,int Y,int W, int H)
 {
  int i,j,k,iMax,px,py,px1,px2,py1,py2,iYM=1;
+ WOS_VRAM_CHANGED();
  EXLong npos;textureSubCacheEntryS * tsb;
  int x1,x2,y1,y2,xa,sw;
 
@@ -813,6 +875,7 @@ void InvalidateSubSTextureArea(int X,int Y,int W, int H)
 
 void InvalidateTextureAreaEx(void)
 {
+ WOS_VRAM_CHANGED();
  short W=sxmax-sxmin;
  short H=symax-symin;
 
@@ -828,6 +891,7 @@ void InvalidateTextureAreaEx(void)
 
 void InvalidateTextureArea(int X,int Y,int W, int H)
 {
+ WOS_VRAM_CHANGED();
  if(W==0 && H==0) return;
 
  if(iMaxTexWnds) InvalidateWndTextureArea(X,Y,W,H);
@@ -2888,8 +2952,59 @@ textureSubCacheEntryS *CheckTextureInSubSCache(
  iMax=GETLE32(SUBCACHE_COUNT_PTR(tsg));
 #ifdef __WARPOS__
  WOS_CRUMB2(80, iMax);
-#endif
+ /* The entries the last lookups found, tried before the scan (a page's
+  * bucket can hold hundreds; neighbouring primitives mostly reuse one).
+  * Each is checked as the scan would check it, and must still lie inside
+  * the bucket's count, so a freed or reused slot is never taken. */
+ {
+  static textureSubCacheEntryS *s_hit[4];
+  static unsigned int s_hitNext;
+  unsigned int h;
+  for(h=0;h<4;h++)
+   {
+    tsb=s_hit[h];
+    if(tsb && tsb>tsg && tsb<=tsg+iMax &&
+       clutKey==tsb->ClutKey && INCHECK(tsb->pos,npos))
+     goto WOS_HIT;
+   }
+  if(iMax)
+   {
+    i=iMax;
+    tsb=tsg+1;
+    do
+     {
+      if(clutKey==tsb->ClutKey && (INCHECK(tsb->pos,npos)))
+       {
+        s_hit[s_hitNext]=tsb;
+        s_hitNext=(s_hitNext+1)&3;
+        goto WOS_HIT;
+       }
+      tsb++;
+     }
+    while(--i);
+   }
+  goto WOS_MISS;
+WOS_HIT:
+  cx=tsb->pos.c.x1-tsb->posTX;
+  cy=tsb->pos.c.y1-tsb->posTY;
+  gl_ux[0]-=cx;
+  gl_ux[1]-=cx;
+  gl_ux[2]-=cx;
+  gl_ux[3]-=cx;
+  gl_vy[0]-=cy;
+  gl_vy[1]-=cy;
+  gl_vy[2]-=cy;
+  gl_vy[3]-=cy;
+  gl_ux[8]=DrawInfoTextureType(tsb->drawInfo);
+  ubOpaqueDraw=DrawInfoOpaque(tsb->drawInfo);
+  *pCache=tsb->cTexID;
+  return NULL;
+WOS_MISS:;
+ }
+ if(0)
+#else
  if(iMax)
+#endif
   {
    i=iMax;
    tsb=tsg+1;
