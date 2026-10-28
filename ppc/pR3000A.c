@@ -753,7 +753,7 @@ static void wos_emit_dispatch(void)
  * 36000 times a frame). A branch back keeps the call, for the idle-loop
  * finder. SetEnv WSX_NOGATE 1: the call always, as before. */
 extern int wos_nogate;
-static u32 wos_stub_bt, wos_stub_bt_gated;
+static u32 wos_stub_bt, wos_stub_bt_gated, wos_stub_bt_back;
 static void wos_emit_bl(u32 target);
 
 /* Two shared stubs: psxBranchTest with the link kept, and the same behind
@@ -762,6 +762,15 @@ static void wos_emit_bl(u32 target);
 static void wos_emit_bt_stubs(void)
 {
 	u32 start = (u32)ppcPtr;
+	u32 *call;
+	extern int wos_idle_on;
+	/* a backward branch: the call while the idle-loop finder looks
+	 * (WarpOS/wos_idle.c), else the gate as for the others */
+	wos_stub_bt_back = (u32)ppcPtr;
+	LIW(3, (u32)&wos_idle_on);
+	LWZ(3, 0, 3);
+	CMPWI(3, 0);
+	BNE_L(call);
 	wos_stub_bt_gated = (u32)ppcPtr;
 	LWZ(3, OFFSET(&psxRegs, &psxRegs.cycle), 31);
 	LIW(4, (u32)&wos_next_event);
@@ -769,6 +778,7 @@ static void wos_emit_bt_stubs(void)
 	SUBF(3, 4, 3);                  /* cycle - next event */
 	CMPWI(3, 0);
 	INSTR = 0x4d800020;             /* bltlr: not due */
+	B_DST(call);
 	wos_stub_bt = (u32)ppcPtr;
 	MFLR(0);
 	STWU(1, -16, 1);
@@ -790,7 +800,12 @@ static void wos_emit_branch_test(int backward)
 		CALLFunc((u32)psxBranchTest);
 		return;
 	}
-	wos_emit_bl(backward || wos_nogate ? wos_stub_bt : wos_stub_bt_gated);
+	{
+		extern int wos_noidle;
+		/* the idle-loop finder needs the backward branches; without it
+		 * they go behind the gate too */
+		wos_emit_bl(wos_nogate ? wos_stub_bt : backward && !wos_noidle ? wos_stub_bt_back : wos_stub_bt_gated);
+	}
 }
 #endif
 

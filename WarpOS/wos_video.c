@@ -413,8 +413,9 @@ void wos_video_frame_stats(void)
                     - st[WOS_PROF_IRQ] - st[WOS_PROF_MDEC] - st[WOS_PROF_GP1]);
         {
             extern unsigned int wos_tex_subs, wos_tex_texels, wos_draws;
-            wos_log("[prof] MiniGL: state %lu us, vertices %lu us, glEnd %lu us, %lu draws a frame",
-                    st[WOS_PROF_STATE], st[WOS_PROF_DRAW], st[WOS_PROF_GLEND], (unsigned long)(wos_draws / s_stat_frames));
+            wos_log("[prof] MiniGL: state %lu us, vertices %lu us, glEnd %lu us, %lu draws a frame; GlesGpu texture lookup %lu us",
+                    st[WOS_PROF_STATE], st[WOS_PROF_DRAW], st[WOS_PROF_GLEND], (unsigned long)(wos_draws / s_stat_frames),
+                    st[WOS_PROF_TEXSEL]);
             wos_draws = 0;
             {
                 extern unsigned int wos_batch_why[6];

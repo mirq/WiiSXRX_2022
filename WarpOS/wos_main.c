@@ -395,6 +395,10 @@ void SysUpdate(void)
     uint32_t t0 = wos_tb_lo(), t1;
 
     framesdone++;
+    {
+        extern void wos_idle_frame(void);
+        wos_idle_frame();
+    }
     WOS_CRUMB_SET(1, framesdone);
     WOS_CRUMB_SET(2, psxRegs.pc);
     WOS_CRUMB(1);

@@ -33,6 +33,42 @@ static unsigned int s_trace_hw;
 extern unsigned int wos_hw_reads;
 unsigned int wos_idle_found, wos_idle_skips;
 
+/* The finder costs every backward branch a psxBranchTest (~2 ms a frame
+ * in a Tekken 3 fight, where it finds nothing). The translated code asks
+ * wos_idle_on: after two seconds without a skip the finder rests for one,
+ * then looks again for a few frames. Called once a frame. */
+int wos_idle_on = 1;
+void wos_idle_frame(void)
+{
+    static unsigned last_skips, quiet, rest, look;
+    if (wos_idle_skips != last_skips) {
+        last_skips = wos_idle_skips;
+        quiet = 0;
+        wos_idle_on = 1;
+        rest = look = 0;
+        return;
+    }
+    if (rest) {
+        if (!--rest) {
+            wos_idle_on = 1;
+            look = 6;
+        }
+        return;
+    }
+    if (look) {
+        if (!--look) {
+            wos_idle_on = 0;
+            rest = 60;
+        }
+        return;
+    }
+    if (++quiet >= 120) {
+        quiet = 0;
+        wos_idle_on = 0;
+        rest = 60;
+    }
+}
+
 static int fetch(u32 a, u32 *op)
 {
     u8 *p = PSXM(a);
