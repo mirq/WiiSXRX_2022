@@ -1199,12 +1199,36 @@ static void rec##f() { \
 	cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2); \
 }
 
+/* The GTE operations themselves read and write only psxRegs.CP2 (and the
+ * opcode): the PSX registers may stay in r14-r31, only the volatile r0-r12
+ * are given up around the call (a full flush cost every GTE operation a
+ * store of each dirty register and a reload after). The moves above still
+ * flush: their C versions read GPRs or memory. */
+#ifdef __WARPOS__
+#define WOS_GTE_FLUSH() do { } while (0)
+#define CP2_FUNCX(f) \
+void gte##f(); \
+WOS_GTE_WRAP(f) \
+static void rec##f() { \
+	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
+	InvalidateCPURegs(); \
+	LIW(0, (u32)psxRegs.code); \
+	STW(0, OFFSET(&psxRegs, &psxRegs.code), GetHWRegSpecial(PSXREGS)); \
+	LIW(3, (u32)&psxRegs.CP2D); \
+	wos_call_raw((u32)WOS_GTE_FN(f)); \
+	cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2); \
+}
+#else
+#define WOS_GTE_FLUSH() iFlushRegs(0)
+#define CP2_FUNCX CP2_FUNC
+#endif
+
 #define CP2_FUNCNC(f) \
 void gte##f(); \
 WOS_GTE_WRAP(f) \
 static void rec##f() { \
 	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
-	iFlushRegs(0); \
+	WOS_GTE_FLUSH(); \
 	InvalidateCPURegs(); \
 	/*LWZ(PutHWRegSpecial(ARG1), OFFSET(&psxRegs, &psxRegs.gteCycle), GetHWRegSpecial(PSXREGS));*/ \
 	/*ADDI(0, GetHWRegSpecial(ARG1), (u32)(psxCP2time[_fFunct_(psxRegs.code)]<<2));*/ \
@@ -1228,7 +1252,7 @@ void gte##f(); \
 WOS_GTE_WRAP(f) \
 static void rec##f() { \
 	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
-	iFlushRegs(0); \
+	WOS_GTE_FLUSH(); \
 	InvalidateCPURegs(); \
 	LIW(0, (u32)psxRegs.code); \
 	STW(0, OFFSET(&psxRegs, &psxRegs.code), GetHWRegSpecial(PSXREGS)); \
@@ -1509,7 +1533,13 @@ __inline static void execute() {
 	wos_block_ring[wos_block_n++ & 31] = psxRegs.pc;
 #endif
 
+#ifdef __WARPOS__
+	/* r30 (PSXMEM, only the #if 0 paths used it as &psxM) holds the RAM
+	 * itself: the inline accesses use it as their base */
+	recRun(*recFunc, (u32)&psxRegs, (u32)psxM);
+#else
 	recRun(*recFunc, (u32)&psxRegs, (u32)&psxM);
+#endif
 }
 
 static void recExecute() {
@@ -2647,8 +2677,7 @@ static void wos_fast_read(int size, u32 func)
 	RLWINM_(12, 3, 0, 3, 10);       /* addr & 0x1fe00000: not the first 2 MB */
 	BNE_L(notram);
 	RLWINM(12, 3, 0, 11, 31);
-	LIW(11, (u32)psxM);
-	stub_load(size, 3, 11, 12);
+	stub_load(size, 3, GetHWRegSpecial(PSXMEM), 12);   /* r30 = psxM */
 	B_L(done);
 	B_DST(notram);
 	wos_emit_bl(wos_stub_rd[stub_k(size)]);
@@ -2670,8 +2699,7 @@ static void wos_fast_write(int size, u32 func)
 	RLWINM_(12, 3, 0, 3, 10);
 	BNE_L(notram);
 	RLWINM(12, 3, 0, 11, 31);
-	LIW(11, (u32)psxM);
-	stub_store(size, 4, 11, 12);
+	stub_store(size, 4, GetHWRegSpecial(PSXMEM), 12);
 	RLWINM(12, 3, 0, 11, 29);       /* the word's translation: recRAM + that */
 	LIW(11, (u32)recRAM);
 	LI(0, 0);
@@ -3882,11 +3910,11 @@ CP2_FUNC(LWC2);
 CP2_FUNC(SWC2);
 
 CP2_FUNCNC_OP(RTPS);
-CP2_FUNC(OP);
+CP2_FUNCX(OP);
 CP2_FUNCNC(NCLIP);
-CP2_FUNC(DPCS);
-CP2_FUNC(INTPL);
-CP2_FUNC(MVMVA);
+CP2_FUNCX(DPCS);
+CP2_FUNCX(INTPL);
+CP2_FUNCX(MVMVA);
 CP2_FUNCNC_OP(NCDS);
 CP2_FUNCNC_OP(NCDT);
 CP2_FUNCNC_OP(CDP);
@@ -3894,14 +3922,14 @@ CP2_FUNCNC_OP(NCCS);
 CP2_FUNCNC_OP(CC);
 CP2_FUNCNC_OP(NCS);
 CP2_FUNCNC_OP(NCT);
-CP2_FUNC(SQR);
-CP2_FUNC(DCPL);
+CP2_FUNCX(SQR);
+CP2_FUNCX(DCPL);
 CP2_FUNCNC_OP(DPCT);
 CP2_FUNCNC(AVSZ3);
 CP2_FUNCNC(AVSZ4);
-CP2_FUNC(RTPT);
-CP2_FUNC(GPF);
-CP2_FUNC(GPL);
+CP2_FUNCX(RTPT);
+CP2_FUNCX(GPF);
+CP2_FUNCX(GPL);
 CP2_FUNCNC_OP(NCCT);
 
 #ifdef __WARPOS__
