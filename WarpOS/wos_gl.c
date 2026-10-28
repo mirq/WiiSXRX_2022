@@ -94,6 +94,7 @@ static WosTex s_tex[MAX_TEX];
 static int    s_cur;                    /* the bound (opengx) texture */
 
 static int    s_texture_enabled;
+static int    s_has_ascale;             /* GL_MGL_texture_env_alpha_scale in use */
 static int    s_blend_enabled;
 static int    s_abr;                    /* glSetGlobalTextABR */
 static int    s_rgb24;
@@ -135,9 +136,12 @@ void ogx_initialize(void)
         return;
     s_has_scale2 = has_ext("GL_MGL_texture_env_rgb_scale") && !wos_env_int("WSX_GL_NOSCALE", 0);
     s_has_rsub   = has_ext("GL_EXT_blend_subtract") && !wos_env_int("WSX_GL_NORSUB", 0);
-    wos_log("[gl] MiniGL: 2x texture scale %s, reverse-subtract blend %s",
+    s_has_ascale = s_has_scale2 && has_ext("GL_MGL_texture_env_alpha_scale") &&
+                   !wos_env_int("WSX_GL_NOASCALE", 0);
+    wos_log("[gl] MiniGL: 2x texture scale %s, reverse-subtract blend %s, 2x alpha scale %s",
             s_has_scale2 ? "yes" : "no (colours clamp at 1.0)",
-            s_has_rsub ? "yes" : "no (B-F approximated)");
+            s_has_rsub ? "yes" : "no (B-F approximated)",
+            s_has_ascale ? "yes" : "no");
     memset(s_tex, 0, sizeof(s_tex));
     glEnable(GL_SCISSOR_TEST);
     s_scissor_on = 1;
@@ -979,13 +983,35 @@ static int compute_state(int texen, int color_enabled, int pass, WosPass *ps, Wo
 
     if (texen) {
         /* ABR 1 from the one plane: alpha blending gives F where STP is
-         * clear and F/2 + B/2 where it is set, in a single draw. */
+         * clear and F/2 + B/2 where it is set, in a single draw. With the
+         * texture alpha x 2 (GL_MGL_texture_env_alpha_scale) the vertex
+         * alpha picks: 1 makes every texel opaque (2 x 0.5 clamps to 1),
+         * 0.5 keeps the plane's 0.5 and 1. Opaque primitives then draw from
+         * the same plane in the same state, and the two no longer split
+         * MiniGL's records -- they alternate all through a 3D scene. */
+        if (t->one && s_one_pass && s_has_ascale && !s_blend_enabled) {
+            ps->tex = t->one;
+            k->blend = 0;
+            ps->alpha = 1.0f;
+            if (!color_enabled && s_no_need_mul) ps->fixed = 1.0f;
+            else                                 ps->factor = 2.0f;
+            if (ps->fixed < 0.0f && s_has_scale2) {
+                ps->scale2 = 1;
+                ps->factor *= 0.5f;
+            }
+            k->zfunc = s_zfunc;
+            k->tex = ps->tex;
+            k->scale2 = s_has_scale2 ? ps->scale2 : 0;
+            return 1;
+        }
         if (s_blend_enabled && s_abr == 1 && t->one && s_one_pass &&
-            (s_tex_semi_type & (TEX_TYPE_1 | TEX_TYPE_2)) == (TEX_TYPE_1 | TEX_TYPE_2)) {
+            (s_has_ascale ||
+             (s_tex_semi_type & (TEX_TYPE_1 | TEX_TYPE_2)) == (TEX_TYPE_1 | TEX_TYPE_2))) {
             if (pass != 0)
                 return 0;
             ps->tex = t->one;
             k->blend = 0;
+            ps->alpha = s_has_ascale ? 0.5f : 1.0f;
             if (!color_enabled && s_no_need_mul) ps->fixed = 1.0f;
             else                                 ps->factor = 2.0f;
             if (ps->fixed < 0.0f && s_has_scale2) {
@@ -1036,6 +1062,9 @@ static int compute_state(int texen, int color_enabled, int pass, WosPass *ps, Wo
             ps->scale2 = 1;
             ps->factor *= 0.5f;
         }
+        /* The alpha x 2 applies to these planes too (texels 0 or 1). */
+        if (s_has_ascale)
+            ps->alpha *= 0.5f;
     } else {
         if (pass != 0)
             return 0;
@@ -1070,6 +1099,8 @@ static void apply_key(const WosKey *k)
         if (!s_gs.valid || !s_gs.tex) {
             glEnable(GL_TEXTURE_2D);
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            if (s_has_ascale)
+                glTexEnvi(GL_TEXTURE_ENV, GL_ALPHA_SCALE, 2);
         }
         if (!s_gs.valid || s_gs.tex != k->tex)
             glBindTexture(GL_TEXTURE_2D, k->tex);
