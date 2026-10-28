@@ -567,6 +567,10 @@ void mdec0Interrupt()
 #ifdef __WARPOS__
 static void psxDma1_decode(u32 adr, u32 bcr, u32 chcr);
 void psxDma1(u32 adr, u32 bcr, u32 chcr) {
+	{
+		extern int framesdone, wos_mdec_frame;
+		wos_mdec_frame = framesdone;    /* a movie plays (r3000a.c's gate) */
+	}
 	WOS_PROF(WOS_PROF_MDEC, psxDma1_decode(adr, bcr, chcr));
 }
 static void psxDma1_decode(u32 adr, u32 bcr, u32 chcr) {

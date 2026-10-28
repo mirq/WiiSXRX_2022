@@ -754,6 +754,7 @@ static void wos_emit_dispatch(void)
  * finder. SetEnv WSX_NOGATE 1: the call always, as before. */
 extern int wos_nogate;
 static u32 wos_stub_bt, wos_stub_bt_gated, wos_stub_bt_back;
+static u32 wos_stub_exit_gated, wos_stub_exit_back;
 static void wos_emit_bl(u32 target);
 
 /* Two shared stubs: psxBranchTest with the link kept, and the same behind
@@ -790,7 +791,64 @@ static void wos_emit_bt_stubs(void)
 	MTLR(0);
 	ADDI(1, 1, 16);
 	BLR();
+
+	/* The end of a j/jal/branch block: r3 the target pc, r4 its cycles.
+	 * Stores both, takes the branch test when due (backward: also while
+	 * the idle-loop finder looks) and goes to the dispatcher -- the block
+	 * itself then ends in four instructions. */
+	{
+		u32 *gate, *gate2, *call, *call2, *disp;
+		wos_stub_exit_back = (u32)ppcPtr;
+		STW(3, OFFSET(&psxRegs, &psxRegs.pc), 31);
+		LWZ(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
+		ADD(0, 0, 4);
+		STW(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
+		LIW(3, (u32)&wos_idle_on);
+		LWZ(3, 0, 3);
+		CMPWI(3, 0);
+		BNE_L(call);
+		B_L(gate);
+		wos_stub_exit_gated = (u32)ppcPtr;
+		STW(3, OFFSET(&psxRegs, &psxRegs.pc), 31);
+		LWZ(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
+		ADD(0, 0, 4);
+		STW(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
+		B_DST(gate);
+		LWZ(3, OFFSET(&psxRegs, &psxRegs.cycle), 31);
+		LIW(4, (u32)&wos_next_event);
+		LWZ(4, 0, 4);
+		SUBF(3, 4, 3);
+		CMPWI(3, 0);
+		BLT_L(disp);
+		B_DST(call);
+		LIW(12, (u32)psxBranchTest);
+		MTCTR(12);
+		BCTRL();
+		B_DST(disp);
+		{
+			s32 d = (s32)(wos_dispatch - (u32)ppcPtr);
+			INSTR = 0x48000000 | (d & 0x3fffffc);       /* b wos_dispatch */
+		}
+		(void)gate2; (void)call2;
+	}
 	wos_cache_flush_code((void *)start, (u32)ppcPtr - start);
+}
+
+/* A j/jal/branch block's end through the exit stub, when there is one. */
+static int wos_emit_block_exit(u32 branchPC, int backward, int cycles)
+{
+	if (!wos_stub_exit_gated || !wos_dispatch || wos_nogate || cycles > 0x7fff)
+		return 0;
+	FlushAllHWReg();
+	LIW(3, branchPC);
+	LI(4, cycles);
+	{
+		extern int wos_noidle;
+		u32 t = backward && !wos_noidle ? wos_stub_exit_back : wos_stub_exit_gated;
+		s32 d = (s32)(t - (u32)ppcPtr);
+		INSTR = 0x48000000 | (d & 0x3fffffc);           /* b the stub */
+	}
+	return 1;
 }
 
 static void wos_emit_branch_test(int backward)
@@ -947,6 +1005,11 @@ static void iJump(u32 branchPC) {
 	recBSC[psxRegs.code>>26]();
 
 	iFlushRegs(branchPC);
+#ifdef __WARPOS__
+	count = (idlecyclecount + (pc - pcold) / 4) * cycleMult / 100;
+	if (wos_emit_block_exit(branchPC, branchPC < pc, count))
+		return;
+#endif
 	LIW(PutHWRegSpecial(PSXPC), branchPC);
 	FlushAllHWReg();
 
@@ -1041,6 +1104,19 @@ static void iBranch(u32 branchPC, int savectx) {
 	recBSC[psxRegs.code>>26]();
 
 	iFlushRegs(branchPC);
+#ifdef __WARPOS__
+	count = (idlecyclecount + (pc - pcold) / 4) * cycleMult / 100;
+	if (wos_emit_block_exit(branchPC, branchPC < pc, count)) {
+		pc -= 4;
+		if (savectx) {
+			resp = respold;
+			memcpy(iRegs, iRegsS, sizeof(iRegs));
+			memcpy(HWRegisters, HWRegistersS, sizeof(HWRegisters));
+			HWRegUseCount = HWRegUseCountS;
+		}
+		return;
+	}
+#endif
 	LIW(PutHWRegSpecial(PSXPC), branchPC);
 	FlushAllHWReg();
 

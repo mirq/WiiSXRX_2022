@@ -160,6 +160,8 @@ void psxException(u32 cause, enum R3000Abdt bdt, psxCP0Regs *cp0) {
 extern u32 psxNextCounter, psxNextsCounter;
 #ifdef __WARPOS__
 u32 wos_next_event;
+int wos_mdec_frame = -1000;     /* the frame of the last MDEC transfer */
+extern int framesdone;
 u32 wos_bt_calls, wos_bt_full;
 u32 wos_ev_why[32];     /* what set the next event: counters, a raised irq, 2 + PSXINT_* */
 int wos_nogate, wos_noidle;    /* SetEnv WSX_NOGATE / WSX_NOIDLE 1: off, to compare */
@@ -183,8 +185,15 @@ static void wos_plan_next_event(void)
 	 * interrupt handler runs with IEc clear) every block end ran the whole
 	 * branch test (~2900 a frame in a Tekken 3 fight). An SR write and RFE
 	 * reopen the gate (psxTestSWInts), as an I_STAT/I_MASK write does. */
+	/* a raised irq matters once the CPU can take it: while SR masks it (an
+	 * interrupt handler runs with IEc clear) every block end ran the whole
+	 * branch test (~2900 a frame in a Tekken 3 fight, 95 without). An SR
+	 * write and RFE reopen the gate (psxTestSWInts), as an I_STAT/I_MASK
+	 * write does. Not while a movie plays (MDEC in the last second): there
+	 * the changed timing made each frame's texture upload wait for the
+	 * previous present (3 -> 14 ms). */
 	if ((psxHu32(0x1070) & psxHu32(0x1074)) &&
-	    (psxRegs.CP0.n.SR & 0x401) == 0x401)
+	    ((psxRegs.CP0.n.SR & 0x401) == 0x401 || framesdone - wos_mdec_frame < 60))
 		best = 0, why = 1;
 	for (i = 0; bits && best > 0; i++, bits >>= 1) {
 		if (bits & 1) {
