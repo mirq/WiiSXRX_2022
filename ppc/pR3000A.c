@@ -1254,7 +1254,9 @@ static void rec##f() { \
 
 #if defined(__WARPOS__) && defined(WOS_PROFCPU)
 #define WOS_GTE_WRAP(f) \
-static void wos_gtet_##f(struct psxCP2Regs *r) { u32 t0 = wos_tb_lo(); gte##f(r); wos_prof_ticks[WOS_PROF_GTE] += wos_tb_lo() - t0; wos_gte_ops++; }
+static u32 wos_gtec_##f[2]; \
+static void wos_gtet_##f(struct psxCP2Regs *r) { u32 t0 = wos_tb_lo(), dt; gte##f(r); dt = wos_tb_lo() - t0; \
+	wos_prof_ticks[WOS_PROF_GTE] += dt; wos_gte_ops++; wos_gtec_##f[0] += dt; wos_gtec_##f[1]++; }
 #define WOS_GTE_FN(f) wos_gtet_##f
 #else
 #define WOS_GTE_WRAP(f)
@@ -4007,6 +4009,35 @@ CP2_FUNCX(RTPT);
 CP2_FUNCX(GPF);
 CP2_FUNCX(GPL);
 CP2_FUNCNC_OP(NCCT);
+
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+/* [prof] gte ops: each operation's share of the GTE time and its count. */
+#define WOS_GTE_ROW(f) { #f, wos_gtec_##f },
+void wos_gte_report(char *line, int size, unsigned frames)
+{
+	static const struct { const char *name; u32 *c; } t[] = {
+		WOS_GTE_ROW(RTPS) WOS_GTE_ROW(RTPT) WOS_GTE_ROW(NCLIP) WOS_GTE_ROW(AVSZ3)
+		WOS_GTE_ROW(AVSZ4) WOS_GTE_ROW(MVMVA) WOS_GTE_ROW(OP) WOS_GTE_ROW(DPCS)
+		WOS_GTE_ROW(INTPL) WOS_GTE_ROW(NCDS) WOS_GTE_ROW(NCDT) WOS_GTE_ROW(CDP)
+		WOS_GTE_ROW(NCCS) WOS_GTE_ROW(CC) WOS_GTE_ROW(NCS) WOS_GTE_ROW(NCT)
+		WOS_GTE_ROW(SQR) WOS_GTE_ROW(DCPL) WOS_GTE_ROW(DPCT) WOS_GTE_ROW(GPF)
+		WOS_GTE_ROW(GPL) WOS_GTE_ROW(NCCT) WOS_GTE_ROW(MFC2) WOS_GTE_ROW(MTC2)
+		WOS_GTE_ROW(CFC2) WOS_GTE_ROW(CTC2) WOS_GTE_ROW(LWC2) WOS_GTE_ROW(SWC2)
+	};
+	u32 total = 0;
+	int i, len = 0;
+	for (i = 0; i < (int)(sizeof t / sizeof t[0]); i++)
+		total += t[i].c[0];
+	for (i = 0; i < (int)(sizeof t / sizeof t[0]) && len < size - 40; i++) {
+		if (t[i].c[1] && total)
+			len += snprintf(line + len, size - len, " %s %lu%% x%lu", t[i].name,
+			                (unsigned long)((u64)t[i].c[0] * 100 / total),
+			                (unsigned long)(t[i].c[1] / (frames ? frames : 1)));
+		t[i].c[0] = t[i].c[1] = 0;
+	}
+	line[len] = 0;
+}
+#endif
 
 #ifdef __WARPOS__
 /* The GTE data moves in the translated code (Tekken 3: ~25000 GTE

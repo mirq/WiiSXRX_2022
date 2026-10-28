@@ -543,6 +543,39 @@ static void run(void)
 
 /* ---- main ------------------------------------------------------------- */
 
+/* SetEnv WSX_GTEBENCH 1: the GTE operations the 3D games use most, timed
+ * warm (10000 calls on the same values) at startup. Against the per-call
+ * times in [prof] gte ops it tells the work from the cache misses. */
+static void gte_bench(void)
+{
+    extern void gteRTPT(psxCP2Regs *), gteNCCT(psxCP2Regs *), gteDPCS(psxCP2Regs *), gteNCLIP(psxCP2Regs *);
+    static const struct { const char *name; void (*f)(psxCP2Regs *); u32 code; int bigtr; } t[] = {
+        { "RTPT", gteRTPT, 0x4a280030, 0 }, { "RTPT general", gteRTPT, 0x4a280030, 1 },
+        { "NCCT", gteNCCT, 0x4a08043f, 0 }, { "NCCT general", gteNCCT, 0x4a08043f, 1 },
+        { "DPCS", gteDPCS, 0x4a080010, 0 }, { "NCLIP", gteNCLIP, 0x4b400006, 0 },
+    };
+    static psxCP2Regs r;
+    u32 save = psxRegs.code;
+    int k, i;
+    for (k = 0; k < (int)(sizeof t / sizeof t[0]); k++) {
+        uint64_t t0;
+        for (i = 0; i < 64; i++)
+            ((u32 *)&r)[i] = (u32)(i * 0x01230123u) & 0x03ff03ffu;
+        r.CP2C.r[26] = 0x200;               /* H */
+        r.CP2C.r[5] = r.CP2C.r[6] = 100;    /* TR */
+        r.CP2C.r[7] = 2000;
+        r.CP2C.r[13] = r.CP2C.r[14] = r.CP2C.r[15] = 50;  /* BK */
+        if (t[k].bigtr)
+            r.CP2C.r[5] = r.CP2C.r[13] = 0x50000000;
+        psxRegs.code = t[k].code;
+        t0 = wos_now_us();
+        for (i = 0; i < 10000; i++)
+            t[k].f(&r);
+        wos_log("[gtebench] %s: %lu ns a call", t[k].name, (unsigned long)((wos_now_us() - t0) / 10));
+    }
+    psxRegs.code = save;
+}
+
 int main(int argc, char **argv)
 {
     int i, rc = 0;
@@ -598,6 +631,8 @@ int main(int argc, char **argv)
         if (wos_nogate || wos_noidle)
             wos_log("event gate %s, idle skip %s", wos_nogate ? "off" : "on", wos_noidle ? "off" : "on");
     }
+    if (wos_env_int("WSX_GTEBENCH", 0))
+        gte_bench();
     if (wos_video_open() != 0) {
         wos_log("cannot open the display");
         rc = 20;

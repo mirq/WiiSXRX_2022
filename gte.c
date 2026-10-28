@@ -593,6 +593,120 @@ void gteRTPS(psxCP2Regs *regs) {
     gteUpdateErrorFlag(regs);
 }
 
+/*
+ * RTPT when no 44-bit MAC sum can overflow: |TR| < 2^30 keeps TR*4096 plus
+ * three s16*s16 products inside 2^43, so the wraps and their flags are
+ * no-ops. Each vertex is then worked in locals with FLAG in a register and
+ * the results stored once: the general version above keeps FLAG and MAC in
+ * memory, and every s16 store makes the compiler reload them (535
+ * instructions a vertex on the 7410). Same results and flags.
+ */
+#define GTE_UNLIKELY(c) __builtin_expect(!!(c), 0)
+static int gteRTPTFast(psxCP2Regs *regs, int sf, int lm) {
+    const s32 trx = gteTRX, try_ = gteTRY, trz = gteTRZ;
+    const s32 r11 = gteR11, r12 = gteR12, r13 = gteR13;
+    const s32 r21 = gteR21, r22 = gteR22, r23 = gteR23;
+    const s32 r31 = gteR31, r32 = gteR32, r33 = gteR33;
+    const s32 ofx = gteOFX, ofy = gteOFY;
+    const u16 h = gteH;
+    const s32 lo = lm ? 0 : -0x8000;
+    u32 flag = 0, q = 0;
+    s32 mac1 = 0, mac2 = 0, mac3 = 0, ir1 = 0, ir2 = 0, ir3 = 0;
+    s16 vxs[3], vys[3], vzs[3];
+    u32 sxy[3];
+    u16 szs[3];
+    int v;
+    s64 dq;
+
+    if (GTE_UNLIKELY((u32)trx + 0x40000000U >= 0x80000000U ||
+        (u32)try_ + 0x40000000U >= 0x80000000U ||
+        (u32)trz + 0x40000000U >= 0x80000000U))
+        return 0;
+    for (v = 0; v < 3; v++) {
+        vxs[v] = VX(v);
+        vys[v] = VY(v);
+        vzs[v] = VZ(v);
+    }
+    for (v = 0; v < 3; v++) {
+        const s32 vx = vxs[v], vy = vys[v], vz = vzs[v];
+        const s64 x = ((s64)trx << 12) + (s64)(r11 * vx) + (s64)(r12 * vy) + (s64)(r13 * vz);
+        const s64 y = ((s64)try_ << 12) + (s64)(r21 * vx) + (s64)(r22 * vy) + (s64)(r23 * vz);
+        const s64 z = ((s64)trz << 12) + (s64)(r31 * vx) + (s64)(r32 * vy) + (s64)(r33 * vz);
+        const s32 z12 = (s32)(z >> 12);
+        s32 sz, sx, sy;
+        s64 scx, scy;
+
+        if (sf) {
+            mac1 = (s32)(x >> 12);
+            mac2 = (s32)(y >> 12);
+            mac3 = z12;
+        } else {
+            mac1 = (s32)x;
+            mac2 = (s32)y;
+            mac3 = (s32)z;
+        }
+        ir1 = mac1;
+        if (GTE_UNLIKELY(ir1 > 0x7fff)) { ir1 = 0x7fff; flag |= 1U << 24; }
+        else if (GTE_UNLIKELY(ir1 < lo)) { ir1 = lo; flag |= 1U << 24; }
+        ir2 = mac2;
+        if (GTE_UNLIKELY(ir2 > 0x7fff)) { ir2 = 0x7fff; flag |= 1U << 23; }
+        else if (GTE_UNLIKELY(ir2 < lo)) { ir2 = lo; flag |= 1U << 23; }
+        if (GTE_UNLIKELY(z12 > 0x7fff || z12 < -0x8000))
+            flag |= 1U << 22;
+        ir3 = mac3;
+        if (GTE_UNLIKELY(ir3 > 0x7fff)) ir3 = 0x7fff;
+        else if (GTE_UNLIKELY(ir3 < lo)) ir3 = lo;
+
+        sz = z12;
+        if (GTE_UNLIKELY(sz > 0xffff)) { sz = 0xffff; flag |= (1U << 31) | (1U << 18); }
+        else if (GTE_UNLIKELY(sz < 0)) { sz = 0; flag |= (1U << 31) | (1U << 18); }
+        q = DIVIDE_INT(h, (u16)sz);
+        if (GTE_UNLIKELY(q > 0x1ffff)) { q = 0x1ffff; flag |= (1U << 31) | (1U << 17); }
+
+        scx = (s64)ofx + (s64)(s16)ir1 * q;
+        scy = (s64)ofy + (s64)(s16)ir2 * q;
+        if (GTE_UNLIKELY(scx > 0x7fffffffLL)) flag |= 1U << 16;
+        else if (GTE_UNLIKELY(scx < -0x80000000LL)) flag |= 1U << 15;
+        if (GTE_UNLIKELY(scy > 0x7fffffffLL)) flag |= 1U << 16;
+        else if (GTE_UNLIKELY(scy < -0x80000000LL)) flag |= 1U << 15;
+        sx = (s32)(scx >> 16);
+        sy = (s32)(scy >> 16);
+        if (GTE_UNLIKELY(sx > 0x3ff)) { sx = 0x3ff; flag |= (1U << 31) | (1U << 14); }
+        else if (GTE_UNLIKELY(sx < -0x400)) { sx = -0x400; flag |= (1U << 31) | (1U << 14); }
+        if (GTE_UNLIKELY(sy > 0x3ff)) { sy = 0x3ff; flag |= (1U << 31) | (1U << 13); }
+        else if (GTE_UNLIKELY(sy < -0x400)) { sy = -0x400; flag |= (1U << 31) | (1U << 13); }
+        szs[v] = (u16)sz;
+        sxy[v] = ((u32)(u16)sy << 16) | (u16)sx;
+    }
+
+    gteSZ0 = gteSZ3;
+    for (v = 0; v < 3; v++) {
+        fSZ(v) = szs[v];
+        regs->CP2D.r[12 + v] = sxy[v];
+    }
+    gteMAC1 = mac1;
+    gteMAC2 = mac2;
+    gteMAC3 = mac3;
+    gteIR1 = (s16)ir1;
+    gteIR2 = (s16)ir2;
+    gteIR3 = (s16)ir3;
+
+    dq = (s64)gteDQB + (s64)gteDQA * q;
+    if (GTE_UNLIKELY(dq > 0x7fffffffLL)) flag |= 1U << 16;
+    else if (GTE_UNLIKELY(dq < -0x80000000LL)) flag |= 1U << 15;
+    gteMAC0 = (s32)dq;
+    {
+        s32 ir0 = (s32)(dq >> 12);
+        if (GTE_UNLIKELY(ir0 > 0x1000)) { ir0 = 0x1000; flag |= 1U << 12; }
+        else if (GTE_UNLIKELY(ir0 < 0)) { ir0 = 0; flag |= 1U << 12; }
+        gteIR0 = (s16)ir0;
+    }
+    if (GTE_UNLIKELY(flag & GTE_FLAG_ERROR_MASK))
+        flag |= 1U << 31;
+    gteFLAG = flag;
+    return 1;
+}
+
 void gteRTPT(psxCP2Regs *regs) {
     const int shift = GTE_SF(gteop) ? 12 : 0;
     const int lm = GTE_LM(gteop);
@@ -602,6 +716,8 @@ void gteRTPT(psxCP2Regs *regs) {
 #ifdef GTE_LOG
     GTE_LOG("GTE RTPT\n");
 #endif
+    if (gteRTPTFast(regs, shift != 0, lm))
+        return;
     gteFLAG = 0;
 
     gteSZ0 = gteSZ3;
@@ -884,6 +1000,82 @@ void gteNCCS(psxCP2Regs *regs) {
     gteUpdateErrorFlag(regs);
 }
 
+/* IR1-3 from MAC1-3 with the opcode's lm; flags 24/23/22. */
+#define GTE_IR3(ir, mac, lo, flag) do { \
+        ir[0] = mac[0]; ir[1] = mac[1]; ir[2] = mac[2]; \
+        if (GTE_UNLIKELY(ir[0] > 0x7fff)) { ir[0] = 0x7fff; flag |= 1U << 24; } \
+        else if (GTE_UNLIKELY(ir[0] < lo)) { ir[0] = lo; flag |= 1U << 24; } \
+        if (GTE_UNLIKELY(ir[1] > 0x7fff)) { ir[1] = 0x7fff; flag |= 1U << 23; } \
+        else if (GTE_UNLIKELY(ir[1] < lo)) { ir[1] = lo; flag |= 1U << 23; } \
+        if (GTE_UNLIKELY(ir[2] > 0x7fff)) { ir[2] = 0x7fff; flag |= 1U << 22; } \
+        else if (GTE_UNLIKELY(ir[2] < lo)) { ir[2] = lo; flag |= 1U << 22; } \
+    } while (0)
+
+/*
+ * NCCT the way gteRTPTFast does RTPT: |BK| < 2^30 keeps every MAC sum
+ * inside 2^43 (the light-matrix sums never come near), the rest is the
+ * same pipeline in locals. Same results and flags.
+ */
+static int gteNCCTFast(psxCP2Regs *regs, int sf, int lm) {
+    const s32 l[9] = { gteL11, gteL12, gteL13, gteL21, gteL22, gteL23, gteL31, gteL32, gteL33 };
+    const s32 c[9] = { gteLR1, gteLR2, gteLR3, gteLG1, gteLG2, gteLG3, gteLB1, gteLB2, gteLB3 };
+    const s32 bk[3] = { gteRBK, gteGBK, gteBBK };
+    const s32 col[3] = { gteR, gteG, gteB };
+    const u32 code = gteCODE;
+    const int sh = sf ? 12 : 0;
+    const s32 lo = lm ? 0 : -0x8000;
+    u32 flag = 0, rgb[3];
+    s32 mac[3] = { 0, 0, 0 }, ir[3] = { 0, 0, 0 };
+    s16 vs[3][3];
+    int v, i;
+
+    for (i = 0; i < 3; i++)
+        if (GTE_UNLIKELY((u32)bk[i] + 0x40000000U >= 0x80000000U))
+            return 0;
+    for (v = 0; v < 3; v++) {
+        vs[v][0] = VX(v);
+        vs[v][1] = VY(v);
+        vs[v][2] = VZ(v);
+    }
+    for (v = 0; v < 3; v++) {
+        u32 r, g, b;
+        for (i = 0; i < 3; i++)
+            mac[i] = (s32)(((s64)(l[i * 3] * vs[v][0]) + (s64)(l[i * 3 + 1] * vs[v][1]) +
+                            (s64)(l[i * 3 + 2] * vs[v][2])) >> sh);
+        GTE_IR3(ir, mac, lo, flag);
+        for (i = 0; i < 3; i++)
+            mac[i] = (s32)((((s64)bk[i] << 12) + (s64)(c[i * 3] * ir[0]) +
+                            (s64)(c[i * 3 + 1] * ir[1]) + (s64)(c[i * 3 + 2] * ir[2])) >> sh);
+        GTE_IR3(ir, mac, lo, flag);
+        for (i = 0; i < 3; i++)
+            mac[i] = (col[i] * ir[i] * 16) >> sh;
+        GTE_IR3(ir, mac, lo, flag);
+        r = mac[0] >> 4;
+        g = mac[1] >> 4;
+        b = mac[2] >> 4;
+        if (GTE_UNLIKELY((s32)r > 0xff)) { r = 0xff; flag |= 1U << 21; }
+        else if (GTE_UNLIKELY((s32)r < 0)) { r = 0; flag |= 1U << 21; }
+        if (GTE_UNLIKELY((s32)g > 0xff)) { g = 0xff; flag |= 1U << 20; }
+        else if (GTE_UNLIKELY((s32)g < 0)) { g = 0; flag |= 1U << 20; }
+        if (GTE_UNLIKELY((s32)b > 0xff)) { b = 0xff; flag |= 1U << 19; }
+        else if (GTE_UNLIKELY((s32)b < 0)) { b = 0; flag |= 1U << 19; }
+        rgb[v] = (code << 24) | (b << 16) | (g << 8) | r;
+    }
+    gteRGB0 = rgb[0];
+    gteRGB1 = rgb[1];
+    gteRGB2 = rgb[2];
+    gteMAC1 = mac[0];
+    gteMAC2 = mac[1];
+    gteMAC3 = mac[2];
+    gteIR1 = (s16)ir[0];
+    gteIR2 = (s16)ir[1];
+    gteIR3 = (s16)ir[2];
+    if (GTE_UNLIKELY(flag & GTE_FLAG_ERROR_MASK))
+        flag |= 1U << 31;
+    gteFLAG = flag;
+    return 1;
+}
+
 void gteNCCT(psxCP2Regs *regs) {
     const int shift = GTE_SF(gteop) ? 12 : 0;
     const int lm = GTE_LM(gteop);
@@ -892,6 +1084,8 @@ void gteNCCT(psxCP2Regs *regs) {
 #ifdef GTE_LOG
     GTE_LOG("GTE NCCT\n");
 #endif
+    if (gteNCCTFast(regs, shift != 0, lm))
+        return;
     gteFLAG = 0;
     for (v = 0; v < 3; v++)
         gteNCCTVertex(regs, VX(v), VY(v), VZ(v), shift, lm);

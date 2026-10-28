@@ -462,6 +462,21 @@ void wos_video_frame_stats(void)
                         (unsigned long)wos_idle[3].pc, (unsigned long)wos_idle[3].pred, (unsigned long)wos_idle[3].skips);
                 { int k; for (k = 0; k < 4; k++) wos_idle[k].skips = 0; }
                 wos_idle_skips = 0;
+                {
+                    extern u32 wos_idle_why[5], wos_irq_taken[11];
+                    wos_log("[prof] idle arrivals a frame: due %lu, other pred %lu, round changed %lu, branch changed %lu, skipped %lu; irqs taken a frame by bit: vbl %lu gpu %lu cd %lu dma %lu t0 %lu t1 %lu t2 %lu pad %lu sio %lu spu %lu pio %lu",
+                            (unsigned long)(wos_idle_why[0] / s_stat_frames), (unsigned long)(wos_idle_why[1] / s_stat_frames),
+                            (unsigned long)(wos_idle_why[2] / s_stat_frames), (unsigned long)(wos_idle_why[3] / s_stat_frames),
+                            (unsigned long)(wos_idle_why[4] / s_stat_frames),
+                            (unsigned long)(wos_irq_taken[0] / s_stat_frames), (unsigned long)(wos_irq_taken[1] / s_stat_frames),
+                            (unsigned long)(wos_irq_taken[2] / s_stat_frames), (unsigned long)(wos_irq_taken[3] / s_stat_frames),
+                            (unsigned long)(wos_irq_taken[4] / s_stat_frames), (unsigned long)(wos_irq_taken[5] / s_stat_frames),
+                            (unsigned long)(wos_irq_taken[6] / s_stat_frames), (unsigned long)(wos_irq_taken[7] / s_stat_frames),
+                            (unsigned long)(wos_irq_taken[8] / s_stat_frames), (unsigned long)(wos_irq_taken[9] / s_stat_frames),
+                            (unsigned long)(wos_irq_taken[10] / s_stat_frames));
+                    memset(wos_idle_why, 0, sizeof wos_idle_why);
+                    memset(wos_irq_taken, 0, sizeof wos_irq_taken);
+                }
             }
             {
                 extern unsigned int wos_xa_why[6];
@@ -487,6 +502,12 @@ void wos_video_frame_stats(void)
                     wos_log("[prof] cpu split: gte %lu us (%u ops), hardware registers %lu us (%u accesses) a frame",
                             st[WOS_PROF_GTE], wos_gte_ops / s_stat_frames, st[WOS_PROF_HW], wos_hw_ops / s_stat_frames);
                     wos_gte_ops = wos_hw_ops = 0;
+                }
+                {
+                    extern void wos_gte_report(char *line, int size, unsigned frames);
+                    char gl[400];
+                    wos_gte_report(gl, sizeof gl, s_stat_frames);
+                    wos_log("[prof] gte ops (share of gte time, count a frame):%s", gl);
                 }
                 {
                     extern void wos_bprof_report(void);

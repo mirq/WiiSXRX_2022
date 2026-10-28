@@ -163,6 +163,8 @@ u32 wos_next_event;
 
 u32 wos_bt_calls, wos_bt_full;
 u32 wos_ev_why[32];     /* what set the next event: counters, a raised irq, 2 + PSXINT_* */
+u32 wos_irq_taken[11];  /* irqs taken, by I_STAT bit */
+u32 wos_idle_why[5];    /* idle loop met but not skipped: due, pred, round, branch changed; skipped */
 int wos_nogate, wos_noidle;    /* SetEnv WSX_NOGATE / WSX_NOIDLE 1: off, to compare */
 
 /* The interrupts psxBranchTest below services; the others are set in
@@ -204,9 +206,17 @@ void psxBranchTest() {
 		wos_prev_pc = pc;
 		if (!(++wos_bt_calls & 15))
 			wos_pc_sample(pc, wos_tb_lo());
+		if (!wos_nogate && (s32)(psxRegs.cycle - wos_next_event) >= 0) {
+			int i;
+			for (i = 0; i < WOS_IDLE_SLOTS; i++)
+				if (wos_idle[i].pc == pc)
+					wos_idle_why[0]++;
+		}
 		if (!wos_nogate && (s32)(psxRegs.cycle - wos_next_event) < 0) {
 			int i;
 			for (i = 0; i < WOS_IDLE_SLOTS && !wos_noidle; i++) {
+				if (wos_idle[i].pc == pc && wos_idle[i].pred != prev)
+					wos_idle_why[1]++;
 				if (wos_idle[i].pc == pc && wos_idle[i].pred == prev) {
 					/* Skipped only when the last round changed no
 					 * register, then the next is the same until an
@@ -216,10 +226,14 @@ void psxBranchTest() {
 					 * countdown or any other change is real work. */
 					if (!wos_idle_same_round(wos_idle[i].regs, psxRegs.GPR.r)) {
 						memcpy(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs));
+						wos_idle_why[2]++;
 						break;
 					}
 					memcpy(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs));
+					wos_idle_why[3]++;
 					if (wos_idle_still(&wos_idle[i])) {
+						wos_idle_why[3]--;
+						wos_idle_why[4]++;
 						psxRegs.cycle = wos_next_event;
 						wos_idle_skips++;
 						wos_idle[i].skips++;
@@ -348,8 +362,15 @@ wos_full:
 	psxRegs.CP0.n.Cause &= ~0x400;
 	if (psxHu32(0x1070) & psxHu32(0x1074))
 		psxRegs.CP0.n.Cause |= 0x400;
-	if (((psxRegs.CP0.n.Cause | 1) & psxRegs.CP0.n.SR & 0x401) == 0x401)
+	if (((psxRegs.CP0.n.Cause | 1) & psxRegs.CP0.n.SR & 0x401) == 0x401) {
+#ifdef __WARPOS__
+		u32 b = psxHu32(0x1070) & psxHu32(0x1074), i;
+		for (i = 0; i < 11; i++)
+			if (b & (1 << i))
+				wos_irq_taken[i]++;
+#endif
 		psxException(0, 0, &psxRegs.CP0);
+	}
 #ifdef __WARPOS__
 	wos_plan_next_event();
 	WOS_CRUMB(69);
