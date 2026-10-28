@@ -1020,7 +1020,36 @@ void wosgl_batch_end(void)
     batch_close();
 }
 
-static void batch_close(void)
+/* Screen-space draws of one state, collected as a triangle list and handed
+ * to MiniGL in one glDrawArrays(MGL_FLATTRIANGLES) (GL_MGL_flat_triangles):
+ * one call for a run of PSX primitives instead of a glBegin/glEnd and a
+ * dozen vertex calls each. 24-byte vertices, the layout MiniGL's array
+ * fetch loads directly. SetEnv WSX_GLARRAY 0: a glBegin per primitive. */
+#ifndef MGL_FLATTRIANGLES
+#define MGL_FLATTRIANGLES 0x701E
+#endif
+typedef struct {
+    float   x, y, z, s, t;
+    GLubyte c[4];
+} WosFlatV;
+#define FLAT_MAX 8190           /* MiniGL takes 8192 vertices a draw */
+static WosFlatV s_fv[FLAT_MAX];
+static int s_fn;                /* vertices waiting */
+static int s_flat_tris = -1;    /* 1: MiniGL has MGL_FLATTRIANGLES */
+
+static void flat_close(void)
+{
+    if (s_fn) {
+        uint32_t t0 = wos_tb_lo();
+        WOS_CRUMB(76);
+        glDrawArrays(MGL_FLATTRIANGLES, 0, s_fn);
+        WOS_CRUMB(77);
+        s_fn = 0;
+        wos_prof_ticks[WOS_PROF_GLEND] += wos_tb_lo() - t0;
+    }
+}
+
+static void bt_close(void)
 {
     if (s_bt.open) {
         uint32_t t0 = wos_tb_lo();
@@ -1028,6 +1057,12 @@ static void batch_close(void)
         glEnd();
         wos_prof_ticks[WOS_PROF_GLEND] += wos_tb_lo() - t0;
     }
+}
+
+static void batch_close(void)
+{
+    bt_close();
+    flat_close();
 }
 
 static void set_blend_abr(int abr)
@@ -1230,6 +1265,34 @@ static void emit_color(const WosPass *ps, const GLubyte *c)
     glColor4f(r, g, b, ps->alpha);
 }
 
+/* MiniGL's ColorByte: what glColor4f would have stored. */
+static inline GLubyte color_byte(float v)
+{
+    if (v <= 0.0f) return 0;
+    if (v >= 1.0f) return 255;
+    return (GLubyte)(v * 255.0f + 0.5f);
+}
+
+static void color_bytes(const WosPass *ps, const GLubyte *c, GLubyte *out)
+{
+    float r, g, b;
+    if (ps->fixed >= 0.0f) {
+        r = g = b = ps->fixed;
+    } else if (ps->col5to8) {
+        r = col5to8(c[0]) / 255.0f * ps->factor;
+        g = col5to8(c[1]) / 255.0f * ps->factor;
+        b = col5to8(c[2]) / 255.0f * ps->factor;
+    } else {
+        r = c[0] / 255.0f * ps->factor;
+        g = c[1] / 255.0f * ps->factor;
+        b = c[2] / 255.0f * ps->factor;
+    }
+    out[0] = color_byte(r);
+    out[1] = color_byte(g);
+    out[2] = color_byte(b);
+    out[3] = color_byte(ps->alpha);
+}
+
 /* MiniGL's MGL_FLATFAN takes vertices already on the screen and appends
  * them as screen-space triangles: 6 dwords a vertex and a short record
  * header, where its transformed path writes 10 and a 76-dword header per
@@ -1256,7 +1319,19 @@ static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
     WosKey key;
     int pass, i;
 
-    wosgl_batch_end();          /* a transformed batch may still be open */
+    bt_close();                 /* a transformed batch may still be open */
+    if (s_flat_tris < 0) {
+        s_flat_tris = has_ext("GL_MGL_flat_triangles") && wos_env_int("WSX_GLARRAY", 1);
+        if (s_flat_tris) {
+            glEnableClientState(GL_VERTEX_ARRAY);
+            glEnableClientState(GL_COLOR_ARRAY);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            glVertexPointer(3, GL_FLOAT, sizeof(WosFlatV), &s_fv[0].x);
+            glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(WosFlatV), s_fv[0].c);
+            glTexCoordPointer(2, GL_FLOAT, sizeof(WosFlatV), &s_fv[0].s);
+        }
+        wos_log("[gl] screen-space draws as %s", s_flat_tris ? "triangle lists (MGL_FLATTRIANGLES)" : "a fan each");
+    }
     if (passes == 2)
         wos_semi_abr[s_abr & 7]++;
     for (pass = 0; pass < passes; pass++) {
@@ -1285,6 +1360,7 @@ static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
                 wos_batch_why[0]++;
             wos_draws++;
             WOS_CRUMB(78);
+            flat_close();       /* the waiting triangles have the old state */
             apply_key(&key);
             s_bt.key = key;
         }
@@ -1292,6 +1368,32 @@ static void draw_flat(GLenum mode, const WosVtx *v, const int *order, int n,
             ogx_draw_submitted_cb();
         t1 = wos_tb_lo();
         wos_prof_ticks[WOS_PROF_STATE] += t1 - t0;
+        if (s_flat_tris) {
+            static const int TRI[6] = { 0, 1, 2, 0, 2, 3 };
+            WosFlatV q[4];
+            GLubyte one[4];
+            int nt = nf == 4 ? 6 : 3;
+            if (s_fn + nt > FLAT_MAX)
+                flat_close();
+            if (!color_enabled || one_color)
+                color_bytes(&ps, color_enabled ? v[order[0]].c : s_lcol, one);
+            for (i = 0; i < nf; i++) {
+                const WosVtx *p = &v[order[fan[i]]];
+                q[i].x = xo + p->x * xs;
+                q[i].y = yo + p->y * ys;
+                q[i].z = zo + p->z * zs;
+                q[i].s = texen ? os + p->s * ss : 0.0f;
+                q[i].t = texen ? ot + p->t * ts : 0.0f;
+                if (color_enabled && !one_color)
+                    color_bytes(&ps, p->c, q[i].c);
+                else
+                    memcpy(q[i].c, one, 4);
+            }
+            for (i = 0; i < nt; i++)
+                s_fv[s_fn++] = q[TRI[i]];
+            wos_prof_ticks[WOS_PROF_DRAW] += wos_tb_lo() - t1;
+            continue;
+        }
         WOS_CRUMB(75);
         glBegin(MGL_FLATFAN);
         if (!color_enabled || one_color)
