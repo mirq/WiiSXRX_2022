@@ -301,8 +301,15 @@ void psxDma6(u32 madr, u32 bcr, u32 chcr) {
 			return;
 		}
 
-		// already 32-bit size
-		words = bcr;
+		// already 32-bit size; the count is BCR's low half (0: 0x10000).
+		// The whole register went into psxRegs.cycle below: the
+		// Crash/Spyro compilation's loader leaves the high half set, the
+		// clock jumped by ~2^31 and the CD read event then read its
+		// "backlog" of thousands of sectors back to back.
+		words = bcr & 0xffff;
+		if (!words)
+			words = 0x10000;
+		bcr = words;
 
 		while (bcr-- && mem > (u32 *)psxM) {
 			//*mem-- = SWAP32((madr - 4) & 0xffffff);

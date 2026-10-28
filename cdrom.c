@@ -414,8 +414,25 @@ static const u8 *rip_rebuild(const u8 *buf)
 	else \
 		psxRegs.intCycle[PSXINT_CDREAD].sCycle += psxRegs.intCycle[PSXINT_CDREAD].cycle; \
 	psxRegs.intCycle[PSXINT_CDREAD].cycle = e_; \
+	WOS_CDREAD_CHECK(isFirst, e_); \
 	set_event_raw_abs(PSXINT_CDREAD, psxRegs.intCycle[PSXINT_CDREAD].sCycle + e_); \
 }
+#ifdef __WARPOS__
+/* a read scheduled far from the clock: logged once, for the cause */
+#define WOS_CDREAD_CHECK(first, e) do { \
+	static int n_; \
+	s32 d_ = (s32)(psxRegs.intCycle[PSXINT_CDREAD].sCycle - psxRegs.cycle); \
+	if ((d_ > 10 * (s32)cdReadTime || d_ < -10 * (s32)cdReadTime) && n_ < 3) { \
+		n_++; \
+		wos_log("[cdr] read scheduled %ld cycles from now (first %d, period %lu, cycle %08lx, line %d, cmd %02x, reading %d)", \
+			(long)d_, (first), (unsigned long)(e), (unsigned long)psxRegs.cycle, __LINE__, \
+			cdr.CmdInProgress, cdr.Reading); \
+		wos_log_flush(); \
+	} \
+} while (0)
+#else
+#define WOS_CDREAD_CHECK(first, e) do { } while (0)
+#endif
 
 #define StopReading() { \
 	cdr.Reading = 0; \
@@ -504,6 +521,10 @@ void cdrLidSeekInterrupt(void)
 			StopReading();
 			SetPlaySeekRead(cdr.StatP, 0);
 			cdr.StatP |= STATUS_SHELLOPEN;
+#ifdef __WARPOS__
+			wos_log("[cdr] lid reported open");
+			wos_log_flush();
+#endif
 
 			// IIRC this sometimes doesn't happen on real hw
 			// (when lots of commands are sent?)
@@ -845,6 +866,23 @@ static int msfiEq(const u8 *a, const u8 *b)
 
 void cdrPlayReadInterrupt(void)
 {
+#ifdef __WARPOS__
+	{
+		/* a read schedule far behind the clock reads its backlog back to back */
+		static int n;
+		s32 lag = (s32)(psxRegs.cycle - (psxRegs.intCycle[PSXINT_CDREAD].sCycle +
+		                                 psxRegs.intCycle[PSXINT_CDREAD].cycle));
+		if (lag > 10 * (s32)cdReadTime && n < 5) {
+			n++;
+			wos_log("[cdr] read event %ld cycles late (cycle %08lx, start %08lx, period %lu, reading %d play %d, sector %02x:%02x:%02x)",
+				(long)lag, (unsigned long)psxRegs.cycle,
+				(unsigned long)psxRegs.intCycle[PSXINT_CDREAD].sCycle,
+				(unsigned long)psxRegs.intCycle[PSXINT_CDREAD].cycle, cdr.Reading, cdr.Play,
+				cdr.SetSectorPlay[0], cdr.SetSectorPlay[1], cdr.SetSectorPlay[2]);
+			wos_log_flush();
+		}
+	}
+#endif
 	cdr.LastReadSeekCycles = psxRegs.cycle;
 
 	if (cdr.Reading) {
@@ -961,6 +999,19 @@ void cdrInterrupt(void) {
 	Cmd = cdr.CmdInProgress;
 	cdr.CmdInProgress = 0;
 	ParamC = cdr.ParamC;
+#ifdef __WARPOS__
+	{
+		/* the first commands, for a disc that misbehaves */
+		static int n;
+		if (n < 200 && Cmd < 0x100 && Cmd != 1) {
+			n++;
+			wos_log("[cdr] cmd %02x params %d: %02x %02x %02x %02x, mode %02x, cycle %08lx",
+				Cmd, ParamC, cdr.Param[0], cdr.Param[1], cdr.Param[2], cdr.Param[3],
+				cdr.Mode, (unsigned long)psxRegs.cycle);
+			wos_log_flush();
+		}
+	}
+#endif
 
 	if (Cmd < 0x100) {
 		cdr.Ctrl &= ~0x80;
@@ -1522,6 +1573,17 @@ void cdrInterrupt(void) {
 			cdr.Result[1] = not_ready ? ERROR_NOTREADY : error;
 			IrqStat = DiskError;
 			CDR_LOG_I("cmd %02x error %02x\n", Cmd, cdr.Result[1]);
+#ifdef __WARPOS__
+			{
+				static int n;
+				if (n < 20) {
+					n++;
+					wos_log("[cdr] command %02x refused: error %02x (drive state %d, stat %02x)",
+						Cmd, cdr.Result[1], cdr.DriveState, cdr.StatP);
+					wos_log_flush();
+				}
+			}
+#endif
 			break;
 	}
 
@@ -1562,6 +1624,18 @@ static void cdrReadInterruptSetResult(unsigned char result)
 			cdr.SetSectorPlay[0], cdr.SetSectorPlay[1], cdr.SetSectorPlay[2],
 			cdr.CmdInProgress, cdr.IrqStat);
 		cdr.Irq1Pending = result;
+#ifdef __WARPOS__
+		{
+			static int n;
+			if (n < 30) {
+				n++;
+				wos_log("[cdr] irq miss at %02x:%02x:%02x (irqstat %02x, cmd %02x, cycle %08lx)",
+					cdr.SetSectorPlay[0], cdr.SetSectorPlay[1], cdr.SetSectorPlay[2],
+					cdr.IrqStat, cdr.CmdInProgress, (unsigned long)psxRegs.cycle);
+				wos_log_flush();
+			}
+		}
+#endif
 		// F1 2000 timing hack :(
 		psxRegs.intCycle[PSXINT_CDREAD].sCycle += cdReadTime / 10;
 		return;
@@ -1617,6 +1691,17 @@ static void cdrReadInterrupt(void)
 
 	if (!read_ok) {
 		CDR_LOG_I("cdrReadInterrupt() Log: err\n");
+#ifdef __WARPOS__
+		{
+			static int n;
+			if (n < 20) {
+				n++;
+				wos_log("[cdr] sector %02x:%02x:%02x unreadable", cdr.SetSectorPlay[0],
+					cdr.SetSectorPlay[1], cdr.SetSectorPlay[2]);
+				wos_log_flush();
+			}
+		}
+#endif
 		cdrReadInterruptSetResult(cdr.StatP | STATUS_ERROR);
 		cdr.DriveState = DRIVESTATE_PAUSED; // ?
 		return;
