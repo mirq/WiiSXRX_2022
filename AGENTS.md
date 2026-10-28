@@ -34,7 +34,9 @@ python3 -m http.server 8090 --bind 192.168.100.46     # in build/warpos/deploy
 System:C/wget -q -O <dest> http://192.168.100.46:8090/<file>
 ```
 
-Then compare the destination CRC (`amiga_checksum`) with the CRC on the PC.
+Then compare the destination CRC (`amiga_checksum`) with the CRC on the PC,
+and `Protect <dest> +e` for a program: wget can leave the file without the
+e bit, and Execute then runs nothing and says nothing.
 Small text files (scripts, cfg) may go through the bridge.
 
 **Flush the disk before any reboot.** `amiga_reboot` does not flush DH2:
@@ -78,6 +80,13 @@ as well. This is how `minigl_ppc.dll` was deployed.
     of screen-space `MGL_FLATFAN` (`WarpOS/wos_gl.c`, `draw_flat`).
   - `WSX_HYB lo-hi`: blocks starting in that hex PSX address range run on
     the interpreter, to find translated code that goes wrong.
+- `SetEnv WSX_GTEBENCH 1` times the busiest GTE operations warm at startup
+  (`[gtebench]`). With WOS_PROFCPU the `[prof] gte ops` line gives each
+  operation's share of the GTE time; `gte.c`'s fast paths must stay
+  bit-exact (compare against the previous gte.c on random registers).
+- The bridge reads memory from the 68060 side: hot PPC data can still sit
+  in the PPC's copy-back cache, so `amiga_inspect_memory` of live hardware
+  registers or counters can show stale values. Log counters instead.
 - `make ... WOS_PROFCPU=1` adds `[prof] cpu split` (GTE and hardware
   register time) and `[bprof]` (the blocks with the most host instructions
   run). The dynarec's speed on the 7410 follows code size, not instructions
