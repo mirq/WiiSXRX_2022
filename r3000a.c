@@ -179,7 +179,12 @@ static void wos_plan_next_event(void)
 	s32 best = (s32)(psxNextsCounter + psxNextCounter - c);
 	int why = 0;
 
-	if (psxHu32(0x1070) & psxHu32(0x1074))
+	/* a raised irq matters once the CPU can take it: while SR masks it (an
+	 * interrupt handler runs with IEc clear) every block end ran the whole
+	 * branch test (~2900 a frame in a Tekken 3 fight). An SR write and RFE
+	 * reopen the gate (psxTestSWInts), as an I_STAT/I_MASK write does. */
+	if ((psxHu32(0x1070) & psxHu32(0x1074)) &&
+	    (psxRegs.CP0.n.SR & 0x401) == 0x401)
 		best = 0, why = 1;
 	for (i = 0; bits && best > 0; i++, bits >>= 1) {
 		if (bits & 1) {

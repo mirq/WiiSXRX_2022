@@ -69,6 +69,20 @@ as well. This is how `minigl_ppc.dll` was deployed.
   0 on the dynarec, 2 checked: an interpreter runs the routine's own code
   next to the C version, and the `[prof] movie decoder` line counts any
   difference. Tekken 3's build matches; Silent Hill's differs in 26 words.
+- Switches for A/B tests of the speed work (all default on):
+  - `WSX_FASTMEM 0`: every dynarec load and store through the C accessors.
+  - `WSX_DISPATCH 0`: blocks return through `recRun` instead of the
+    dispatcher stub.
+  - `WSX_GLBATCH 0`: one `glBegin` per primitive on the transformed path.
+  - `WSX_GLFLAT 0`: GlesGpu's draws take MiniGL's transformed path instead
+    of screen-space `MGL_FLATFAN` (`WarpOS/wos_gl.c`, `draw_flat`).
+  - `WSX_HYB lo-hi`: blocks starting in that hex PSX address range run on
+    the interpreter, to find translated code that goes wrong.
+- `make ... WOS_PROFCPU=1` adds `[prof] cpu split` (GTE and hardware
+  register time) and `[bprof]` (the blocks with the most host instructions
+  run). The dynarec's speed on the 7410 follows code size, not instructions
+  run: the 32 KB instruction cache is the limit, so keep slow paths out of
+  line (the shared stubs at the start of the code buffer).
 - `SetEnv WSX_QUIT 1` quits from the bridge. If the CPU loop does not
   return, the program shuts down from the vblank 2 s later.
 - Don't use Break or CTRL-C.
@@ -103,7 +117,15 @@ The log has three kinds of periodic line:
 - The log also prints `psxRegs` and `psxM`, so PSX code and registers can be
   read the same way.
 - A frozen program can also be a PPC exception. Its requester opens on the
-  Workbench screen, behind the MiniGL screen.
+  Workbench screen, behind the MiniGL screen. The log gives the address of
+  an exception record (`wos_exc`, `WarpOS/wos_sys.c`) the handler fills.
+- A program whose process is gone while its screen stays open called
+  `exit()` from somewhere (an `assert` is enough): the atexit hook logs
+  `[diag] exit()` with the return addresses up the stack, against the
+  run-time address of `wos_log` for `addr2line`. Stores to unmapped
+  addresses do not fault on this machine.
+- Don't run tests while a large file downloads to `Work:`: the CD image
+  reads compete with it for the disk (247 ms a frame of CD reads).
 - Fixed Wii addresses (`Gamecube/MEM2.h`: `*_LO`) crash with no message.
   The SPU RAM was one of them.
 
