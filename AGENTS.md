@@ -134,9 +134,10 @@ The log has three kinds of periodic line:
 - Program drawer: `Work:WiiStation/`.
   - `WiiStation`
   - `WiiStation-R200` (the launch script)
-  - `minigl_ppc.dll`: from MiniGL branch `wiistation` (061cd8b or later:
-    direct-path texture pages and partial updates, the CP register cache;
-    WiiStation relies on them for 3D speed), converted on Linux with
+  - `minigl_ppc.dll`: from MiniGL branch `wiistation` (53d2afb or later:
+    direct-path texture pages and partial updates, the CP register cache,
+    and the row-pool fix 1bf7e31 without which the Crash compilation froze
+    in `glTexSubImage2D`; WiiStation relies on them for 3D speed), converted on Linux with
     `tools/elf2warpos/elf2warpos.py`. The previous build is `mgl_prev.dll`; the
     Oct 21 DLL from `Work:SilentHill WOS` is `mgl_sh.dll`, its host
     `mglhost_sh`.
