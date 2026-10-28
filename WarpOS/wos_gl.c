@@ -219,6 +219,14 @@ static GLint wrap_conv(GLint p)
     }
 }
 
+/* MiniGL textures made and deleted here, for the log (a leak fills VRAM). */
+unsigned int wos_gl_tex_made, wos_gl_tex_deleted;
+static void gl_del(GLuint *name)
+{
+    glDeleteTextures(1, name);
+    wos_gl_tex_deleted++;
+}
+
 /* A MiniGL texture of w x h, its texels from bgra (or black). */
 unsigned int wos_tex_subs, wos_tex_texels, wos_draws;    /* partial uploads, for the log */
 static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLubyte *bgra, int fmt);
@@ -232,6 +240,7 @@ static GLuint make_plane_fmt(int w, int h, GLint wraps, GLint wrapt, const GLuby
     GLuint name = 0;
     GLint f = filter_for();
     glGenTextures(1, &name);
+    wos_gl_tex_made++;
     glBindTexture(GL_TEXTURE_2D, name);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
@@ -259,7 +268,7 @@ static void drop_one(WosTex *t)
 {
     if (t->one) {
         wosgl_gl_touched();
-        glDeleteTextures(1, &t->one);
+        gl_del(&t->one);
         t->one = 0;
     }
 }
@@ -281,13 +290,13 @@ static void free_planes(WosTex *t)
     int i;
     detach_cell(t);
     drop_one(t);
-    if (t->main) glDeleteTextures(1, &t->main);
-    if (t->semi) glDeleteTextures(1, &t->semi);
+    if (t->main) gl_del(&t->main);
+    if (t->semi) gl_del(&t->semi);
     t->main = t->semi = 0;
     t->w = t->h = 0;
     for (i = 0; i < TEX_SPARES; i++) {
-        if (t->spare[i].main) glDeleteTextures(1, &t->spare[i].main);
-        if (t->spare[i].semi) glDeleteTextures(1, &t->spare[i].semi);
+        if (t->spare[i].main) gl_del(&t->spare[i].main);
+        if (t->spare[i].semi) gl_del(&t->spare[i].semi);
     }
     memset(t->spare, 0, sizeof t->spare);
 }
@@ -329,8 +338,8 @@ static int switch_planes(WosTex *t, int w, int h, int fmt)
     }
     if (cur.main) {
         WosPlanes *last = &t->spare[TEX_SPARES - 1];
-        if (last->main) glDeleteTextures(1, &last->main);
-        if (last->semi) glDeleteTextures(1, &last->semi);
+        if (last->main) gl_del(&last->main);
+        if (last->semi) gl_del(&last->semi);
         memmove(&t->spare[1], &t->spare[0], sizeof t->spare[0] * (TEX_SPARES - 1));
         t->spare[0] = cur;
     }
@@ -630,10 +639,18 @@ static int atlas_take(WosTex *t)
     }
     if (s_atlas.state < 0 || !ensure_conv(256 * 256))
         return 0;
-    for (c = 0; c < ATLAS_CELLS && s_atlas.used[c]; c++)
-        ;
-    if (c == ATLAS_CELLS)
-        return 0;
+    {
+        static int cells = -1;      /* SetEnv WSX_ATLASCELLS n: fewer cells (tests) */
+        if (cells < 0) {
+            cells = wos_env_int("WSX_ATLASCELLS", ATLAS_CELLS);
+            if (cells < 1 || cells > ATLAS_CELLS)
+                cells = ATLAS_CELLS;
+        }
+        for (c = 0; c < cells && s_atlas.used[c]; c++)
+            ;
+        if (c == cells)
+            return 0;
+    }
     s_atlas.used[c] = 1;
     t->cell = c + 1;
     t->main = s_atlas.main;

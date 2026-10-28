@@ -426,6 +426,11 @@ void wos_video_frame_stats(void)
                         wos_batch_why[3] / s_stat_frames, wos_batch_why[4] / s_stat_frames, wos_batch_why[5] / s_stat_frames,
                         wos_tex_distinct);
                 wos_tex_onoff = wos_tex_blend = 0;
+                {
+                    extern unsigned int wos_gl_tex_made, wos_gl_tex_deleted;
+                    wos_log("[gl] MiniGL textures live %u (made %u, deleted %u)",
+                            wos_gl_tex_made - wos_gl_tex_deleted, wos_gl_tex_made, wos_gl_tex_deleted);
+                }
                 wos_log("[prof] two-pass textured primitives a frame by blend mode: 0:%u 1:%u 2:%u 3:%u 4:%u",
                         wos_semi_abr[0] / s_stat_frames, wos_semi_abr[1] / s_stat_frames, wos_semi_abr[2] / s_stat_frames,
                         wos_semi_abr[3] / s_stat_frames, wos_semi_abr[4] / s_stat_frames);

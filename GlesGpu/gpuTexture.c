@@ -507,6 +507,17 @@ void CheckTextureMemory(void)
 
 #if 1
  iSortTexCnt=MAXSORTTEX;
+#ifdef __WARPOS__
+ /* WarpOS: as many pages as the GL layer's atlas holds (WarpOS/wos_gl.c):
+  * a page beyond it is a texture of its own, and every switch to it a new
+  * MiniGL record. A full cache compacts itself (CompressTextureSpace).
+  * SetEnv WSX_SORTTEX n: n pages (1..MAXSORTTEX_MAX). */
+ {
+  extern int wos_env_int(const char *name, int def);
+  int n=wos_env_int("WSX_SORTTEX",8);
+  if(n>=1 && n<=MAXSORTTEX) iSortTexCnt=n;
+ }
+#endif
 #else // below vram detector supposedly crashes some drivers
 #endif
 }
