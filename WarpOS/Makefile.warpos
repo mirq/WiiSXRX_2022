@@ -88,6 +88,10 @@ DEFINES := -D__WARPOS__ -DPSX_HOST_BIG_ENDIAN_PPC -D__BIG_ENDIAN__ \
            -DUSE_LIBCHDR -DHAVE_LROUND -DPACKAGE_VERSION=\"1.3.2\" \
            -DWOS_BUILD_STAMP=\"$(BUILD_STAMP)\" -DWOS_HAVE_DYNAREC -DWOS_HAVE_GLES
 # make WOS_CRUMBS=1: breadcrumbs the bridge can read from memory in a hang
+# make WOS_PROFCPU=1: the GTE and hardware register accesses timed apart
+ifeq ($(WOS_PROFCPU),1)
+DEFINES += -DWOS_PROFCPU
+endif
 ifeq ($(WOS_CRUMBS),1)
 DEFINES += -DWOS_CRUMBS
 endif

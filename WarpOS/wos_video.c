@@ -480,6 +480,18 @@ void wos_video_frame_stats(void)
                                 wos_vlc_calls, wos_vlc_instr / wos_vlc_calls, st[WOS_PROF_VLC], wos_vlc_bad);
                     wos_vlc_calls = wos_vlc_instr = 0;
                 }
+#ifdef WOS_PROFCPU
+                {
+                    extern unsigned int wos_gte_ops, wos_hw_ops;
+                    wos_log("[prof] cpu split: gte %lu us (%u ops), hardware registers %lu us (%u accesses) a frame",
+                            st[WOS_PROF_GTE], wos_gte_ops / s_stat_frames, st[WOS_PROF_HW], wos_hw_ops / s_stat_frames);
+                    wos_gte_ops = wos_hw_ops = 0;
+                }
+                {
+                    extern void wos_bprof_report(void);
+                    wos_bprof_report();
+                }
+#endif
                 {
                     extern unsigned int wos_rec_blocks, wos_rec_flushes;
                     wos_log("[prof] dynarec: %lu blocks made a frame in %lu us, %u full flushes",

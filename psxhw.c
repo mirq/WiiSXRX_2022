@@ -465,6 +465,12 @@ int psxHwFreeze(gzFile f, int Mode) {
 #else
 #define WOS_IRQ_CHECK() do { } while (0)
 #endif
-void psxHwWrite8(u32 add, u32 value) { psxHwWrite8_(add, value); WOS_IRQ_CHECK(); }
-void psxHwWrite16(u32 add, u32 value) { psxHwWrite16_(add, value); WOS_IRQ_CHECK(); }
-void psxHwWrite32(u32 add, u32 value) { psxHwWrite32_(add, value); WOS_IRQ_CHECK(); }
+#ifdef WOS_PROFCPU
+unsigned int wos_hw_ops;
+#define WOS_HWT(stmt) do { uint32_t _t0 = wos_tb_lo(); stmt; wos_prof_ticks[WOS_PROF_HW] += wos_tb_lo() - _t0; wos_hw_ops++; } while (0)
+#else
+#define WOS_HWT(stmt) stmt
+#endif
+void psxHwWrite8(u32 add, u32 value) { WOS_HWT(psxHwWrite8_(add, value)); WOS_IRQ_CHECK(); }
+void psxHwWrite16(u32 add, u32 value) { WOS_HWT(psxHwWrite16_(add, value)); WOS_IRQ_CHECK(); }
+void psxHwWrite32(u32 add, u32 value) { WOS_HWT(psxHwWrite32_(add, value)); WOS_IRQ_CHECK(); }

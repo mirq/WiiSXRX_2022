@@ -252,6 +252,14 @@ void psxMemOnIsolate(int enable)
 			: R3000ACPU_NOTIFY_CACHE_UNISOLATED, NULL);
 }
 
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+#include "WarpOS/wos_sys.h"
+extern unsigned int wos_hw_ops;
+#define WOS_HWR(e) do { uint32_t _t0 = wos_tb_lo(); u32 _v = (e); wos_prof_ticks[WOS_PROF_HW] += wos_tb_lo() - _t0; wos_hw_ops++; return _v; } while (0)
+#else
+#define WOS_HWR(e) return (e)
+#endif
+
 u8 psxMemRead8(u32 mem) {
 	u32 t;
 
@@ -260,7 +268,7 @@ u8 psxMemRead8(u32 mem) {
 		if ((mem & 0xffff) < 0x400)
 			return psxHu8(mem);
 		else
-			return psxHwRead8(mem);
+			WOS_HWR(psxHwRead8(mem));
 	} else {
 		char *p = (char *)(psxMemRLUT[t]);
 		if (p != NULL) {
@@ -285,7 +293,7 @@ u16 psxMemRead16(u32 mem) {
 			return LOAD_SWAP16p(psxHAddr(mem));
             // upd xjsxjs197 end
 		else
-			return psxHwRead16(mem);
+			WOS_HWR(psxHwRead16(mem));
 	} else {
 		char *p = (char *)(psxMemRLUT[t]);
 		if (p != NULL) {
@@ -313,7 +321,7 @@ u32 psxMemRead32(u32 mem) {
 			return LOAD_SWAP32p(psxHAddr(mem));
             // upd xjsxjs197 end
 		else
-			return psxHwRead32(mem);
+			WOS_HWR(psxHwRead32(mem));
 	} else {
 		char *p = (char *)(psxMemRLUT[t]);
 		if (p != NULL) {

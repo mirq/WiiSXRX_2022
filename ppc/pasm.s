@@ -65,6 +65,35 @@ returnPC:
 	mtlr	r0            # set LR
 	blr                 # return
 
+# void wos_slowcall(): calls the function in r12 with r3/r4, keeping
+# r5-r10 -- the translated code's inline memory access uses it for its
+# rare slow path, so PSX registers held there survive the access.
+.text
+.align  4
+.globl  wos_slowcall
+wos_slowcall:
+	mflr	r0
+	stwu	r1, -48(r1)
+	stw		r0, 52(r1)
+	stw		r5, 8(r1)
+	stw		r6, 12(r1)
+	stw		r7, 16(r1)
+	stw		r8, 20(r1)
+	stw		r9, 24(r1)
+	stw		r10, 28(r1)
+	mtctr	r12
+	bctrl
+	lwz		r5, 8(r1)
+	lwz		r6, 12(r1)
+	lwz		r7, 16(r1)
+	lwz		r8, 20(r1)
+	lwz		r9, 24(r1)
+	lwz		r10, 28(r1)
+	lwz		r0, 52(r1)
+	mtlr	r0
+	addi	r1, r1, 48
+	blr
+
 #// Memory functions that only works with a linear memory
 #
 #        .text

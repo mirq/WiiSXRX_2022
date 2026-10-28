@@ -753,23 +753,44 @@ static void wos_emit_dispatch(void)
  * 36000 times a frame). A branch back keeps the call, for the idle-loop
  * finder. SetEnv WSX_NOGATE 1: the call always, as before. */
 extern int wos_nogate;
-static void wos_emit_branch_test(int backward)
-{
-	u32 *skip;
+static u32 wos_stub_bt, wos_stub_bt_gated;
+static void wos_emit_bl(u32 target);
 
-	FlushAllHWReg();
-	if (backward || wos_nogate) {
-		CALLFunc((u32)psxBranchTest);
-		return;
-	}
+/* Two shared stubs: psxBranchTest with the link kept, and the same behind
+ * the gate (returns at once while cycle < wos_next_event). Emitted once at
+ * the start of the code buffer, so a block end costs one bl. */
+static void wos_emit_bt_stubs(void)
+{
+	u32 start = (u32)ppcPtr;
+	wos_stub_bt_gated = (u32)ppcPtr;
 	LWZ(3, OFFSET(&psxRegs, &psxRegs.cycle), 31);
 	LIW(4, (u32)&wos_next_event);
 	LWZ(4, 0, 4);
 	SUBF(3, 4, 3);                  /* cycle - next event */
 	CMPWI(3, 0);
-	BLT_L(skip);
-	CALLFunc((u32)psxBranchTest);
-	B_DST(skip);
+	INSTR = 0x4d800020;             /* bltlr: not due */
+	wos_stub_bt = (u32)ppcPtr;
+	MFLR(0);
+	STWU(1, -16, 1);
+	STW(0, 20, 1);
+	LIW(12, (u32)psxBranchTest);
+	MTCTR(12);
+	BCTRL();
+	LWZ(0, 20, 1);
+	MTLR(0);
+	ADDI(1, 1, 16);
+	BLR();
+	wos_cache_flush_code((void *)start, (u32)ppcPtr - start);
+}
+
+static void wos_emit_branch_test(int backward)
+{
+	FlushAllHWReg();
+	if (!wos_stub_bt) {
+		CALLFunc((u32)psxBranchTest);
+		return;
+	}
+	wos_emit_bl(backward || wos_nogate ? wos_stub_bt : wos_stub_bt_gated);
 }
 #endif
 
@@ -936,6 +957,15 @@ static void iJump(u32 branchPC) {
 	// always return for now...
 	//Return();
 
+#ifdef __WARPOS__
+	/* the dispatcher finds the next block (the inline check cost ~10
+	 * instructions of code a block end) */
+	if (wos_dispatch) {
+		(void)b1; (void)b2;
+		Return();
+		return;
+	}
+#endif
 	// maybe just happened an interruption, check so
 	LIW(0, branchPC);
 	CMPLW(GetHWRegSpecial(PSXPC), 0);
@@ -1016,6 +1046,12 @@ static void iBranch(u32 branchPC, int savectx) {
 	// always return for now...
 	//Return();
 
+#ifdef __WARPOS__
+	if (wos_dispatch) {
+		(void)b1; (void)b2;
+		Return();
+	} else {
+#endif
 	LIW(0, branchPC);
 	CMPLW(GetHWRegSpecial(PSXPC), 0);
 	BNE_L(b1);
@@ -1031,6 +1067,9 @@ static void iBranch(u32 branchPC, int savectx) {
 	B_DST(b2);
 	MTCTR(3);
 	BCTR();
+#ifdef __WARPOS__
+	}
+#endif
 
 	// maybe just happened an interruption, check so
 /*	CMP32ItoM((u32)&psxRegs.pc, branchPC);
@@ -1122,8 +1161,18 @@ static void rec##f() { \
 	iRet(); \
 }
 
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+#define WOS_GTE_WRAP(f) \
+static void wos_gtet_##f(struct psxCP2Regs *r) { u32 t0 = wos_tb_lo(); gte##f(r); wos_prof_ticks[WOS_PROF_GTE] += wos_tb_lo() - t0; wos_gte_ops++; }
+#define WOS_GTE_FN(f) wos_gtet_##f
+#else
+#define WOS_GTE_WRAP(f)
+#define WOS_GTE_FN(f) gte##f
+#endif
+
 #define CP2_FUNC(f) \
 void gte##f(); \
+WOS_GTE_WRAP(f) \
 static void rec##f() { \
 	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
 	iFlushRegs(0); \
@@ -1131,12 +1180,13 @@ static void rec##f() { \
 	STW(0, OFFSET(&psxRegs, &psxRegs.code), GetHWRegSpecial(PSXREGS)); \
 	LIW(PutHWRegSpecial(ARG1), (struct psxCP2Regs *)&psxRegs.CP2D); \
 	FlushAllHWReg(); \
-	CALLFunc ((u32)gte##f); \
+	CALLFunc ((u32)WOS_GTE_FN(f)); \
 	cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2); \
 }
 
 #define CP2_FUNCNC(f) \
 void gte##f(); \
+WOS_GTE_WRAP(f) \
 static void rec##f() { \
 	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
 	iFlushRegs(0); \
@@ -1146,7 +1196,7 @@ static void rec##f() { \
 	/*STW(0, OFFSET(&psxRegs, &psxRegs.gteCycle), GetHWRegSpecial(PSXREGS));*/ \
 	/*ADDI(PutHWRegSpecial(CYCLECOUNT), GetHWRegSpecial(CYCLECOUNT), (u32)(psxCP2time[_fFunct_(psxRegs.code)]<<2));*/ \
 	LIW(PutHWRegSpecial(ARG1), (struct psxCP2Regs *)&psxRegs.CP2D); \
-	CALLFunc ((u32)gte##f); \
+	CALLFunc ((u32)WOS_GTE_FN(f)); \
 /*	branch = 2; */\
 	cop2readypc = pc + psxCP2time[_fFunct_(psxRegs.code)]; \
 }
@@ -1160,6 +1210,7 @@ static void rec##f() { \
  */
 #define CP2_FUNCNC_OP(f) \
 void gte##f(); \
+WOS_GTE_WRAP(f) \
 static void rec##f() { \
 	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2); \
 	iFlushRegs(0); \
@@ -1167,7 +1218,7 @@ static void rec##f() { \
 	LIW(0, (u32)psxRegs.code); \
 	STW(0, OFFSET(&psxRegs, &psxRegs.code), GetHWRegSpecial(PSXREGS)); \
 	LIW(PutHWRegSpecial(ARG1), (struct psxCP2Regs *)&psxRegs.CP2D); \
-	CALLFunc ((u32)gte##f); \
+	CALLFunc ((u32)WOS_GTE_FN(f)); \
 	cop2readypc = pc + psxCP2time[_fFunct_(psxRegs.code)]; \
 }
 
@@ -1261,6 +1312,13 @@ static int recInit() {
 	return allocMem();
 }
 
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+extern int wos_bprof_n;
+#endif
+#ifdef __WARPOS__
+static void wos_emit_mem_stubs(void);
+static void wos_emit_bt_stubs(void);
+#endif
 static void recReset() {
 	psxRegs.ICache_valid = FALSE;
 
@@ -1269,8 +1327,13 @@ static void recReset() {
 
 	ppcInit();
 	ppcSetPtr((u32 *)recMem);
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+	wos_bprof_n = 0;
+#endif
 #ifdef __WARPOS__
 	wos_emit_dispatch();
+	wos_emit_mem_stubs();
+	wos_emit_bt_stubs();
 #endif
 
 	branch = 0;
@@ -1346,7 +1409,43 @@ static void recError() {
 }
 
 #ifdef __WARPOS__
-u32 wos_rec_blocks, wos_rec_flushes;
+u32 wos_rec_blocks, wos_rec_flushes, wos_gte_ops;
+#endif
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+#define WOS_BPROF_N 32768
+struct wos_bprof_e { u32 pc, n, size; } wos_bprof[WOS_BPROF_N];
+int wos_bprof_n;
+/* The blocks with the most host instructions run (runs x size), then reset. */
+void wos_bprof_report(void)
+{
+	int top[12], k, i, j;
+	for (k = 0; k < 12; k++) {
+		int best = -1;
+		for (i = 0; i < wos_bprof_n; i++) {
+			for (j = 0; j < k && top[j] != i; j++)
+				;
+			if (j < k)
+				continue;
+			if (best < 0 || (u64)wos_bprof[i].n * wos_bprof[i].size > (u64)wos_bprof[best].n * wos_bprof[best].size)
+				best = i;
+		}
+		top[k] = best;
+	}
+	{
+		u64 total = 0;
+		for (i = 0; i < wos_bprof_n; i++)
+			total += (u64)wos_bprof[i].n * wos_bprof[i].size;
+		wos_log("[bprof] %d blocks, %lu host instructions a frame", wos_bprof_n, (unsigned long)(total / 300));
+	}
+	for (k = 0; k < 12; k += 3) {
+		wos_log("[bprof] %08lx %lu x %lu, %08lx %lu x %lu, %08lx %lu x %lu",
+			(unsigned long)wos_bprof[top[k]].pc, (unsigned long)wos_bprof[top[k]].n / 300, (unsigned long)wos_bprof[top[k]].size,
+			(unsigned long)wos_bprof[top[k+1]].pc, (unsigned long)wos_bprof[top[k+1]].n / 300, (unsigned long)wos_bprof[top[k+1]].size,
+			(unsigned long)wos_bprof[top[k+2]].pc, (unsigned long)wos_bprof[top[k+2]].n / 300, (unsigned long)wos_bprof[top[k+2]].size);
+	}
+	for (i = 0; i < wos_bprof_n; i++)
+		wos_bprof[i].n = 0;
+}
 #endif
 
 __inline static void execute() {
@@ -2283,6 +2382,10 @@ static void recDIVU() {
 
 /* - memory access - */
 
+#ifdef __WARPOS__
+static void wos_mem_prepare(void);
+#endif
+
 static void preMemRead()
 {
 	int rs;
@@ -2298,7 +2401,11 @@ static void preMemRead()
 	if (_Rs_ == _Rt_) {
 		DisposeHWReg(iRegs[_Rt_].reg);
 	}
+#ifdef __WARPOS__
+	wos_mem_prepare();
+#else
 	InvalidateCPURegs();
+#endif
 	//FlushAllHWReg();
 }
 
@@ -2322,7 +2429,11 @@ static void preMemWrite(int size)
 //	}
     MR(PutHWRegSpecial(ARG2), GetHWReg32(_Rt_));
 
+#ifdef __WARPOS__
+	wos_mem_prepare();
+#else
 	InvalidateCPURegs();
+#endif
 	//FlushAllHWReg();
 }
 
@@ -2346,6 +2457,30 @@ static void wos_call_raw(u32 func)
 	}
 }
 
+/* The slow path of an inline access: the C accessor through wos_slowcall
+ * (pasm.s), which keeps r5-r10. */
+void wos_slowcall(void);
+static void wos_call_slow(u32 func)
+{
+	LIW(12, func);
+	wos_call_raw((u32)wos_slowcall);
+}
+
+/* Before an inline access: only the scratch registers (r11, r12) are
+ * given up; the arguments are reserved, r5-r10 survive (wos_call_slow).
+ * Through C as before when WSX_FASTMEM is 0. */
+static int wos_fast_on(void);
+static int wos_keepregs = -1;   /* SetEnv WSX_KEEPREGS 0: give up r0-r12 anyway */
+static void wos_mem_prepare(void)
+{
+	if (wos_keepregs < 0)
+		wos_keepregs = wos_env_int("WSX_KEEPREGS", 1);
+	if (wos_fast_on() && wos_keepregs)
+		FlushCPURegRange(11, 12);
+	else
+		InvalidateCPURegs();
+}
+
 static int wos_fast_on(void)
 {
 	if (wos_fastmem < 0)
@@ -2364,49 +2499,171 @@ static int wos_fast_on(void)
 	CMPLWI(dst, 0); \
 	BEQ_L(slow2);
 
+/* The first 2 MB (no mirror, no hardware) inline: psxM + (addr & 0x1fffff).
+ * Everything else -- the page table, the scratchpad, the C accessor with
+ * r5-r10 kept -- is one shared stub per access kind (wos_emit_mem_stubs),
+ * so a block carries ~8 instructions an access, not ~40: the code has to
+ * fit the 7410's 32 KB instruction cache. The stubs take the address in
+ * r3 (the value in r4), return a load in r3, and use r0, r11, r12, CTR. */
+static u32 wos_stub_rd[3], wos_stub_wr[3];     /* [0] 8, [1] 16, [2] 32 bits */
+
+static int stub_k(int size) { return size == 4 ? 2 : size == 2 ? 1 : 0; }
+
+static void wos_emit_bl(u32 target)
+{
+	s32 d = (s32)(target - (u32)ppcPtr);
+	INSTR = 0x48000001 | (d & 0x03fffffc);
+}
+
+static void stub_load(int size, int d, int base, int off)
+{
+	if (size == 4)
+		LWBRX(d, base, off)
+	else if (size == 2)
+		LHBRX(d, base, off)
+	else
+		LBZX(d, base, off)
+}
+
+static void stub_store(int size, int s_, int base, int off)
+{
+	if (size == 4)
+		STWBRX(s_, base, off)
+	else if (size == 2)
+		STHBRX(s_, base, off)
+	else
+		STBX(s_, base, off)
+}
+
+/* The C accessor with r5-r10 and the link kept: the end of a stub. */
+static void stub_slow(u32 func)
+{
+	MFLR(0);
+	STWU(1, -48, 1);
+	STW(0, 52, 1);
+	STW(5, 8, 1); STW(6, 12, 1); STW(7, 16, 1);
+	STW(8, 20, 1); STW(9, 24, 1); STW(10, 28, 1);
+	LIW(12, func);
+	MTCTR(12);
+	BCTRL();
+	LWZ(5, 8, 1); LWZ(6, 12, 1); LWZ(7, 16, 1);
+	LWZ(8, 20, 1); LWZ(9, 24, 1); LWZ(10, 28, 1);
+	LWZ(0, 52, 1);
+	MTLR(0);
+	ADDI(1, 1, 48);
+	BLR();
+}
+
+static void wos_emit_mem_stubs(void)
+{
+	static const u32 rd[3] = { (u32)psxMemRead8, (u32)psxMemRead16, (u32)psxMemRead32 };
+	static const u32 wr[3] = { (u32)psxMemWrite8, (u32)psxMemWrite16, (u32)psxMemWrite32 };
+	u32 start = (u32)ppcPtr;
+	int k;
+
+	for (k = 0; k < 3; k++) {
+		int size = 1 << k;
+		u32 *hw, *slow1, *slow2;
+
+		/* a read */
+		wos_stub_rd[k] = (u32)ppcPtr;
+		RLWINM(12, 3, 16, 19, 31);
+		CMPLWI(12, 0x1f80);
+		BEQ_L(hw);
+		RLWINM(12, 3, 18, 14, 29);
+		LIW(11, (u32)psxMemRLUT);
+		LWZX(12, 11, 12);
+		CMPLWI(12, 0);
+		BEQ_L(slow1);
+		RLWINM(11, 3, 0, 16, 31);
+		stub_load(size, 3, 12, 11);
+		BLR();
+		B_DST(hw);                      /* the scratchpad, below 0x400 */
+		RLWINM(11, 3, 0, 16, 21);
+		CMPLWI(11, 0);
+		BNE_L(slow2);
+		LIW(12, (u32)psxH);
+		RLWINM(11, 3, 0, 22, 31);
+		stub_load(size, 3, 12, 11);
+		BLR();
+		B_DST(slow1);
+		B_DST(slow2);
+		stub_slow(rd[k]);
+
+		/* a write: the page table's RAM also drops the word's translation */
+		wos_stub_wr[k] = (u32)ppcPtr;
+		RLWINM(12, 3, 16, 19, 31);
+		CMPLWI(12, 0x1f80);
+		BEQ_L(hw);
+		RLWINM(12, 3, 18, 14, 29);
+		LIW(11, (u32)psxMemWLUT);
+		LWZX(11, 11, 12);
+		CMPLWI(11, 0);
+		BEQ_L(slow1);
+		RLWINM(0, 3, 0, 16, 31);
+		stub_store(size, 4, 11, 0);
+		LIW(11, (u32)psxRecLUT);
+		LWZX(11, 11, 12);
+		RLWINM(0, 3, 0, 16, 29);
+		LI(12, 0);
+		STWX(12, 11, 0);
+		BLR();
+		B_DST(hw);
+		RLWINM(11, 3, 0, 16, 21);
+		CMPLWI(11, 0);
+		BNE_L(slow2);
+		LIW(12, (u32)psxH);
+		RLWINM(0, 3, 0, 22, 31);
+		stub_store(size, 4, 12, 0);
+		BLR();
+		B_DST(slow1);
+		B_DST(slow2);
+		stub_slow(wr[k]);
+	}
+	wos_cache_flush_code((void *)start, (u32)ppcPtr - start);
+}
+
 static void wos_fast_read(int size, u32 func)
 {
-	u32 *slow1, *slow2, *done;
+	u32 *notram, *done;
+	(void)func;
 
 	ReleaseArgs();
-	WOS_FAST_PAGE(psxMemRLUT, slow1, slow2, 12);
-	RLWINM(11, 3, 0, 16, 31);
-	if (size == 4)
-		LWBRX(3, 12, 11)
-	else if (size == 2)
-		LHBRX(3, 12, 11)
-	else
-		LBZX(3, 12, 11)
+	RLWINM_(12, 3, 0, 3, 10);       /* addr & 0x1fe00000: not the first 2 MB */
+	BNE_L(notram);
+	RLWINM(12, 3, 0, 11, 31);
+	LIW(11, (u32)psxM);
+	stub_load(size, 3, 11, 12);
 	B_L(done);
-	B_DST(slow1);
-	B_DST(slow2);
-	wos_call_raw(func);
+	B_DST(notram);
+	wos_emit_bl(wos_stub_rd[stub_k(size)]);
 	B_DST(done);
 }
 
 static void wos_fast_write(int size, u32 func)
 {
-	u32 *slow1, *slow2, *done;
+	u32 *notram, *done;
+	(void)func;
 
 	ReleaseArgs();
-	WOS_FAST_PAGE(psxMemWLUT, slow1, slow2, 11);
-	RLWINM(0, 3, 0, 16, 31);
-	if (size == 4)
-		STWBRX(4, 11, 0)
-	else if (size == 2)
-		STHBRX(4, 11, 0)
-	else
-		STBX(4, 11, 0)
-	/* the translation of this word: psxRecLUT[page] + (addr & 0xfffc) */
-	LIW(11, (u32)psxRecLUT);
-	LWZX(11, 11, 12);
-	RLWINM(0, 3, 0, 16, 29);
-	LI(12, 0);
-	STWX(12, 11, 0);
+	/* not while the cache is isolated (that empties the write table and
+	 * flushes every translation): the stub then finds no page */
+	if (!psxMemWLUT[0x8000]) {
+		wos_emit_bl(wos_stub_wr[stub_k(size)]);
+		return;
+	}
+	RLWINM_(12, 3, 0, 3, 10);
+	BNE_L(notram);
+	RLWINM(12, 3, 0, 11, 31);
+	LIW(11, (u32)psxM);
+	stub_store(size, 4, 11, 12);
+	RLWINM(12, 3, 0, 11, 29);       /* the word's translation: recRAM + that */
+	LIW(11, (u32)recRAM);
+	LI(0, 0);
+	STWX(0, 11, 12);
 	B_L(done);
-	B_DST(slow1);
-	B_DST(slow2);
-	wos_call_raw(func);
+	B_DST(notram);
+	wos_emit_bl(wos_stub_wr[stub_k(size)]);
 	B_DST(done);
 }
 
@@ -3632,6 +3889,103 @@ CP2_FUNC(GPF);
 CP2_FUNC(GPL);
 CP2_FUNCNC_OP(NCCT);
 
+#ifdef __WARPOS__
+/* The GTE data moves in the translated code (Tekken 3: ~25000 GTE
+ * operations a frame, most of them moves, each a call with every register
+ * flushed around it). Registers with side effects keep the call. */
+static void wos_cop2_idle(void)
+{
+	if (pc < cop2readypc) idlecyclecount += ((cop2readypc - pc)>>2);
+}
+
+#define CP2D_OFF(n) OFFSET(&psxRegs, &psxRegs.CP2D.r[n])
+
+static void recMTC2w() {
+	int rd = _Rd_;
+	if (rd == 15 || rd == 28 || rd == 30 || rd == 31) {
+		recMTC2();
+		return;
+	}
+	wos_cop2_idle();
+	STW(GetHWReg32(_Rt_), CP2D_OFF(rd), GetHWRegSpecial(PSXREGS));
+	cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2);
+}
+
+static void recMFC2w() {
+	int rd = _Rd_, t;
+	if (rd == 15 || rd == 28 || rd == 29) {
+		recMFC2();
+		return;
+	}
+	if (!_Rt_)
+		return;
+	wos_cop2_idle();
+	t = PutHWReg32(_Rt_);
+	switch (rd) {
+	case 1: case 3: case 5: case 8: case 9: case 10: case 11:
+		/* the low half, sign-extended, also written back (as MFC2 does) */
+		LHA(t, CP2D_OFF(rd) + 2, GetHWRegSpecial(PSXREGS));
+		STW(t, CP2D_OFF(rd), GetHWRegSpecial(PSXREGS));
+		break;
+	case 7: case 16: case 17: case 18: case 19:
+		LHZ(t, CP2D_OFF(rd) + 2, GetHWRegSpecial(PSXREGS));
+		STW(t, CP2D_OFF(rd), GetHWRegSpecial(PSXREGS));
+		break;
+	default:
+		LWZ(t, CP2D_OFF(rd), GetHWRegSpecial(PSXREGS));
+		break;
+	}
+	cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2);
+}
+
+static void recLWC2w() {
+	int rt = _Rt_, rs;
+	if (rt == 15 || rt == 28 || rt == 30 || rt == 31 || !wos_fast_on()) {
+		recLWC2();
+		return;
+	}
+	wos_cop2_idle();
+	ReserveArgs(1);
+	rs = GetHWReg32(_Rs_);
+	ADDI(PutHWRegSpecial(ARG1), rs, _Imm_);
+	wos_mem_prepare();
+	wos_fast_read(4, (u32)psxMemRead32);
+	STW(3, CP2D_OFF(rt), GetHWRegSpecial(PSXREGS));
+	cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2);
+}
+
+static void recSWC2w() {
+	int rt = _Rt_, rs;
+	switch (rt) {
+	case 1: case 3: case 5: case 7: case 8: case 9: case 10: case 11:
+	case 15: case 16: case 17: case 18: case 19: case 28: case 29:
+		recSWC2();
+		return;
+	}
+	if (!wos_fast_on()) {
+		recSWC2();
+		return;
+	}
+	wos_cop2_idle();
+	ReserveArgs(2);
+	rs = GetHWReg32(_Rs_);
+	ADDI(PutHWRegSpecial(ARG1), rs, _Imm_);
+	LWZ(PutHWRegSpecial(ARG2), CP2D_OFF(rt), GetHWRegSpecial(PSXREGS));
+	wos_mem_prepare();
+	wos_fast_write(4, (u32)psxMemWrite32);
+	cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2);
+}
+#define recMTC2_T recMTC2w
+#define recMFC2_T recMFC2w
+#define recLWC2_T recLWC2w
+#define recSWC2_T recSWC2w
+#else
+#define recMTC2_T recMTC2
+#define recMFC2_T recMFC2
+#define recLWC2_T recLWC2
+#define recSWC2_T recSWC2
+#endif
+
 //REC_FUNC(HLE);
 static void recHLE() {
 	iFlushRegs(0);
@@ -3674,8 +4028,8 @@ static void (*recBSC[64])() = {
 	recNULL   , recNULL  , recNULL, recNULL , recNULL, recNULL, recNULL, recNULL,
 	recLB     , recLH    , recLWL , recLW   , recLBU , recLHU , recLWR , recNULL,
 	recSB     , recSH    , recSWL , recSW   , recNULL, recNULL, recSWR , recNULL,
-	recNULL   , recNULL  , recLWC2, recNULL , recNULL, recNULL, recNULL, recNULL,
-	recNULL   , recNULL  , recSWC2, recHLE  , recNULL, recNULL, recNULL, recNULL
+	recNULL   , recNULL  , recLWC2_T, recNULL , recNULL, recNULL, recNULL, recNULL,
+	recNULL   , recNULL  , recSWC2_T, recHLE  , recNULL, recNULL, recNULL, recNULL
 };
 
 static void (*recSPC[64])() = {
@@ -3715,7 +4069,7 @@ static void (*recCP2[64])(struct psxCP2Regs *regs) = {
 };
 
 static void (*recCP2BSC[32])(struct psxCP2Regs *regs) = {
-	recMFC2, recNULL, recCFC2, recNULL, recMTC2, recNULL, recCTC2, recNULL,
+	recMFC2_T, recNULL, recCFC2, recNULL, recMTC2_T, recNULL, recCTC2, recNULL,
 	recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL,
 	recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL,
 	recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL, recNULL
@@ -3853,6 +4207,19 @@ __inline static void recRecompile() {
 
 	// tell the LUT where to find us
 	PC_REC32(psxRegs.pc) = (u32)ppcPtr;
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+	/* the block profile: each block counts its runs */
+	int wos_bp = -1;
+	if (wos_bprof_n < WOS_BPROF_N) {
+		wos_bp = wos_bprof_n++;
+		wos_bprof[wos_bp].pc = psxRegs.pc;
+		wos_bprof[wos_bp].n = 0;
+		LIW(11, (u32)&wos_bprof[wos_bp].n);
+		LWZ(12, 0, 11);
+		ADDI(12, 12, 1);
+		STW(12, 0, 11);
+	}
+#endif
 
 	pcold = pc = psxRegs.pc;
 
@@ -3931,6 +4298,10 @@ __inline static void recRecompile() {
   branch = 0;
 
   u32 endRange = (u32)(u8*)ppcPtr-(u32)(u8*)ptr;
+#if defined(__WARPOS__) && defined(WOS_PROFCPU)
+  if (wos_bp >= 0)
+	wos_bprof[wos_bp].size = endRange / 4;
+#endif
 #ifdef __WARPOS__
   wos_cache_flush_code((void*)ptr, endRange);
 #else
