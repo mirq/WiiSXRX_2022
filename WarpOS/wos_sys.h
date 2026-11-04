@@ -28,7 +28,7 @@ void     wos_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void     wos_log_flush(void);
 /* Where a frame's time goes: time-base ticks per stage, read without leaving
  * the PPC; the stats line turns them into us per frame and clears them. */
-enum { WOS_PROF_GPU, WOS_PROF_SPU, WOS_PROF_LACE, WOS_PROF_CDR, WOS_PROF_MDEC, WOS_PROF_RCNT, WOS_PROF_IRQ, WOS_PROF_GP1, WOS_PROF_READ, WOS_PROF_TEXCONV, WOS_PROF_TEXUP, WOS_PROF_UPSCREEN, WOS_PROF_SYS, WOS_PROF_INPUT, WOS_PROF_DRAW, WOS_PROF_STATE, WOS_PROF_VLC, WOS_PROF_REC, WOS_PROF_GLEND, WOS_PROF_GTE, WOS_PROF_HW, WOS_PROF_TEXSEL, WOS_PROF_N };
+enum { WOS_PROF_GPU, WOS_PROF_SPU, WOS_PROF_LACE, WOS_PROF_CDR, WOS_PROF_MDEC, WOS_PROF_RCNT, WOS_PROF_IRQ, WOS_PROF_GP1, WOS_PROF_READ, WOS_PROF_TEXCONV, WOS_PROF_TEXUP, WOS_PROF_UPSCREEN, WOS_PROF_SYS, WOS_PROF_INPUT, WOS_PROF_DRAW, WOS_PROF_STATE, WOS_PROF_VLC, WOS_PROF_REC, WOS_PROF_GLEND, WOS_PROF_GTE, WOS_PROF_HW, WOS_PROF_TEXSEL, WOS_PROF_BT, WOS_PROF_N };
 extern uint32_t wos_prof_reads;
 extern uint32_t wos_prof_ticks[WOS_PROF_N];
 static inline uint32_t wos_tb_lo(void)
@@ -39,6 +39,32 @@ static inline uint32_t wos_tb_lo(void)
 }
 #define WOS_PROF(i, stmt) do { uint32_t _t0 = wos_tb_lo(); stmt; wos_prof_ticks[i] += wos_tb_lo() - _t0; } while (0)
 uint32_t wos_tb_hz(void);
+/* SetEnv WSX_PMC 1: the 7410's performance counters, read in user mode
+ * (UPMC1-4) at the same stage boundaries, so the log can say what a stage
+ * stalls on. WSX_PMCSEL "a,b,c,d" picks the events (default 1,5,5,2:
+ * cycles, L1 instruction misses, L1 data misses, instructions). */
+extern int wos_pmc_on;
+extern uint32_t wos_prim_cyc[256], wos_prim_n[256];   /* PMC1 by GPU command */
+extern uint32_t wos_pmc_acc[WOS_PROF_N][4];
+static inline void wos_pmc_read(uint32_t *v)
+{
+    __asm__ volatile("mfspr %0,937\n\tmfspr %1,938\n\tmfspr %2,941\n\tmfspr %3,942"
+                     : "=r"(v[0]), "=r"(v[1]), "=r"(v[2]), "=r"(v[3]));
+}
+static inline void wos_pmc_add(int stage, const uint32_t *p0)
+{
+    uint32_t v[4];
+    wos_pmc_read(v);
+    wos_pmc_acc[stage][0] += v[0] - p0[0];
+    wos_pmc_acc[stage][1] += v[1] - p0[1];
+    wos_pmc_acc[stage][2] += v[2] - p0[2];
+    wos_pmc_acc[stage][3] += v[3] - p0[3];
+}
+#define WOS_PMC_T0 uint32_t _pmc0[4]; if (wos_pmc_on) wos_pmc_read(_pmc0)
+#define WOS_PMC_ADD(stage) do { if (wos_pmc_on) wos_pmc_add(stage, _pmc0); } while (0)
+void wos_pmc_init(void);
+void wos_pmc_report(unsigned frames);
+void wos_pcprof_poll(unsigned presents);
 /* Where the PSX spends its time: psxBranchTest hands in the pc and the time
  * base; the time since the previous call is charged to the previous pc. */
 void wos_pc_sample(uint32_t pc, uint32_t tb);

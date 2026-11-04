@@ -213,12 +213,12 @@ void psxDma2(u32 madr, u32 bcr, u32 chcr) { // GPU
 			madr_next_p = do_walking ? &madr_next : NULL;
 
 #ifdef __WARPOS__
-			{ uint32_t _t0 = wos_tb_lo();
+			{ uint32_t _t0 = wos_tb_lo(); WOS_PMC_T0;
 #endif
 			cycles_sum = gpuPtr->dmaChain((u32 *)psxM, madr & 0x1fffff,
 					madr_next_p, &cycles_last_cmd);
 #ifdef __WARPOS__
-			wos_prof_ticks[WOS_PROF_GPU] += wos_tb_lo() - _t0; }
+			wos_prof_ticks[WOS_PROF_GPU] += wos_tb_lo() - _t0; WOS_PMC_ADD(WOS_PROF_GPU); }
 #endif
 			// Old Soft Gpu check
 			if (gpuPtr != &newSoftGpu)
@@ -257,12 +257,12 @@ void gpuInterrupt() {
 		long cycles_sum;
 
 #ifdef __WARPOS__
-		{ uint32_t _t0 = wos_tb_lo();
+		{ uint32_t _t0 = wos_tb_lo(); WOS_PMC_T0;
 #endif
 		cycles_sum = gpuPtr->dmaChain((u32 *)psxM, madr & 0x1fffff,
 				&madr_next, &cycles_last_cmd);
 #ifdef __WARPOS__
-		wos_prof_ticks[WOS_PROF_GPU] += wos_tb_lo() - _t0; }
+		wos_prof_ticks[WOS_PROF_GPU] += wos_tb_lo() - _t0; WOS_PMC_ADD(WOS_PROF_GPU); }
 #endif
 		HW_DMA2_MADR = SWAPu32(madr_next);
 		if ((s32)(psxRegs.gpuIdleAfter - psxRegs.cycle) > 0)

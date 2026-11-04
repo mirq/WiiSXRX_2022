@@ -467,7 +467,7 @@ int psxHwFreeze(gzFile f, int Mode) {
 #endif
 #ifdef WOS_PROFCPU
 unsigned int wos_hw_ops;
-#define WOS_HWT(stmt) do { uint32_t _t0 = wos_tb_lo(); stmt; wos_prof_ticks[WOS_PROF_HW] += wos_tb_lo() - _t0; wos_hw_ops++; } while (0)
+#define WOS_HWT(stmt) do { uint32_t _t0 = wos_tb_lo(); WOS_PMC_T0; stmt; wos_prof_ticks[WOS_PROF_HW] += wos_tb_lo() - _t0; WOS_PMC_ADD(WOS_PROF_HW); wos_hw_ops++; } while (0)
 #else
 #define WOS_HWT(stmt) stmt
 #endif

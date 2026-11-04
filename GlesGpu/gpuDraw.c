@@ -1372,6 +1372,49 @@ void SetOGLDisplaySettings(BOOL DisplaySet)
  PSXDisplay.CumulOffset.x = PSXDisplay.DrawOffset.x - PSXDisplay.GDrawOffset.x+PreviousPSXDisplay.Range.x0;
  PSXDisplay.CumulOffset.y = PSXDisplay.DrawOffset.y - PSXDisplay.GDrawOffset.y+PreviousPSXDisplay.Range.y0;
 
+ #ifdef __WARPOS__
+ /* The drawing area as the scissor, in the coordinates the vertices get
+  * (vram - GDrawOffset + Range, scaled to the window): Tekken 3's menu
+  * draws all its entries and lets the area show three. An area off the
+  * display draws unclipped, as before. SetEnv WSX_DRAWCLIP 0: never. */
+ {
+  static int clip = -1;
+  if (clip < 0) { extern int wos_env_int(const char *, int); clip = wos_env_int("WSX_DRAWCLIP", 1); }
+  if (clip && PSXDisplay.DisplayMode.x > 0 && PSXDisplay.DisplayMode.y > 0)
+   {
+    RECT a; int dx = PreviousPSXDisplay.Range.x0 - PSXDisplay.GDrawOffset.x;
+    int dy = PreviousPSXDisplay.Range.y0 - PSXDisplay.GDrawOffset.y;
+    XS=(float)rRatioRect.right/(float)PSXDisplay.DisplayMode.x;
+    YS=(float)rRatioRect.bottom/(float)PSXDisplay.DisplayMode.y;
+    a.left   = (int)((float)(PSXDisplay.DrawArea.x0 + dx) * XS);
+    a.right  = (int)((float)(PSXDisplay.DrawArea.x1 + 1 + dx) * XS);
+    a.top    = (int)((float)(PSXDisplay.DrawArea.y0 + dy) * YS);
+    a.bottom = (int)((float)(PSXDisplay.DrawArea.y1 + 1 + dy) * YS);
+    if (a.left < 0) a.left = 0;
+    if (a.top < 0) a.top = 0;
+    if (a.right > rRatioRect.right) a.right = rRatioRect.right;
+    if (a.bottom > rRatioRect.bottom) a.bottom = rRatioRect.bottom;
+    if (a.right <= a.left || a.bottom <= a.top)
+     {                                   /* off the display: unclipped */
+      a = rRatioRect;
+      a.top = iResY - (rRatioRect.top + rRatioRect.bottom);
+     }
+    else
+     {
+      int h = a.bottom - a.top;
+      a.right -= a.left;
+      a.left += rRatioRect.left;
+      a.top = iResY - (rRatioRect.top + a.top + h);
+      a.bottom = h;
+     }
+    if (!EqualRect(&a, &rC))
+     {
+      rC = a;
+      glScissor(rC.left, rC.top, rC.right, rC.bottom); glError();
+     }
+   }
+ }
+ #endif
  // The following code doesn't seem to have much effect and may affect text display in all FF games. Let's comment it out for now
 // r.top   =PSXDisplay.DrawArea.y0 - PreviousPSXDisplay.DisplayPosition.y;
 // r.bottom=PSXDisplay.DrawArea.y1 - PreviousPSXDisplay.DisplayPosition.y;

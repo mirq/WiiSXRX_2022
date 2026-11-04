@@ -22,6 +22,7 @@
 #define AKEY_F5       0x54
 #define AKEY_F7       0x56
 #define AKEY_F10      0x59
+#define AKEY_F8       0x57
 #define AKEY_UP_PREFIX 0x80
 
 /* The keyboard's PSX bindings: raw key -> PSXB_* bit. */
@@ -31,7 +32,8 @@ static uint8_t  s_keydown[128];
  * drained every few frames, and a tap can come and go inside one drain. */
 #define KEY_LATCH 4
 static uint8_t  s_keylatch[128];
-static unsigned s_peek_drains, s_timer_drains, s_timer_mail;
+static unsigned s_peek_drains, s_timer_drains, s_timer_mail, s_peek_empty;
+static uint32_t s_t_sig, s_t_drain, s_t_peek;    /* time-base ticks, for the log */
 
 /* Joystick ports: live (a stick or pad answers) and when to look again. */
 static int      s_port_live[2];
@@ -113,6 +115,13 @@ static unsigned handle_key(UWORD code, UWORD qual)
     case AKEY_F5:  return WOS_ACT_SAVESTATE;
     case AKEY_F7:  return WOS_ACT_LOADSTATE;
     case AKEY_F10: return WOS_ACT_FASTFWD;
+    case AKEY_F8: {     /* diagnosis: the next present into T:shot.ppm, the
+                         * frame after next's primitives into the log */
+        extern int wos_shot_req, wos_probe_frame, framesdone;
+        wos_shot_req = 1;
+        wos_probe_frame = framesdone + 2;
+        return 0;
+    }
     }
     return 0;
 }
@@ -179,8 +188,13 @@ unsigned wos_input_poll(void *window)
 
     /* Each OS call is a 68k trip (~2.5 ms for these two): the signals are
      * looked at once a second, the window's port only when it has mail. */
-    if (++frame % 50 == 0) {
+    /* Each 68k call is several ms on this machine (SetSignal: 12-72 ms per
+     * 300 frames at one call every 50): CTRL-C every 300 frames, the
+     * port's safety drain every 150. */
+    if (++frame % 300 == 0) {
+        uint32_t t0 = wos_tb_lo();
         ULONG sigs = SetSignal(0, 0);
+        s_t_sig += wos_tb_lo() - t0;
         if (sigs & SIGBREAKF_CTRL_C) {
             SetSignal(0, SIGBREAKF_CTRL_C);
             act |= WOS_ACT_QUIT;
@@ -194,16 +208,24 @@ unsigned wos_input_poll(void *window)
     }
     if (frame % 300 == 0) {
         extern unsigned int wos_pad_polls[2], wos_pad_pressed[2], wos_pad_last[2];
-        wos_log("[input] drains: %u on mail seen, %u by timer (%u of them with mail); pad 1 polled %u, %u with buttons (last %04x)",
-                s_peek_drains, s_timer_drains, s_timer_mail,
+        wos_log("[input] SetSignal %lu us, drains %lu us, peeks %lu us in 300 frames",
+                (unsigned long)((uint64_t)s_t_sig * 1000000u / wos_tb_hz()),
+                (unsigned long)((uint64_t)s_t_drain * 1000000u / wos_tb_hz()),
+                (unsigned long)((uint64_t)s_t_peek * 1000000u / wos_tb_hz()));
+        s_t_sig = s_t_drain = s_t_peek = 0;
+        wos_log("[input] drains: %u on mail seen (%u found none), %u by timer (%u of them with mail); pad 1 polled %u, %u with buttons (last %04x)",
+                s_peek_drains, s_peek_empty, s_timer_drains, s_timer_mail,
                 wos_pad_polls[0], wos_pad_pressed[0], wos_pad_last[0]);
         wos_pad_polls[0] = wos_pad_pressed[0] = 0;
     }
     if (win && win->UserPort) {
         struct IntuiMessage *m;
+        uint32_t tp = wos_tb_lo();
         int peek = port_has_message(win->UserPort), got = 0;
-        if (!peek && frame % 50 != 0)   /* the peek has missed nothing so far */
+        s_t_peek += wos_tb_lo() - tp;
+        if (!peek && frame % 150 != 0)  /* the peek has missed nothing so far */
             goto ports;
+        tp = wos_tb_lo();
         if (peek) s_peek_drains++; else s_timer_drains++;
         while ((m = (struct IntuiMessage *)GetMsg(win->UserPort)) != NULL) {
             got = 1;
@@ -218,8 +240,11 @@ unsigned wos_input_poll(void *window)
             else if (cls == IDCMP_INACTIVEWINDOW)
                 memset(s_keydown, 0, sizeof(s_keydown));
         }
+        s_t_drain += wos_tb_lo() - tp;
         if (got && !peek)
             s_timer_mail++;
+        if (peek && !got)
+            s_peek_empty++;
     }
 ports:
 

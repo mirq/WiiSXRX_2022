@@ -1140,6 +1140,24 @@ return STATUSREG;
 // these are always single packet commands.
 ////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+/* The game's display mode in the log, each time it changes. */
+static void wos_log_dispmode(void)
+{
+ static int lastmode=-1;
+ int mode=(PSXDisplay.DisplayModeNew.x<<16)|(PSXDisplay.DisplayModeNew.y<<2)|
+          (PSXDisplay.InterlacedNew?2:0)|(PSXDisplay.RGB24New?1:0);
+ if(mode!=lastmode)
+  {
+   extern void wos_log(const char *fmt, ...);
+   lastmode=mode;
+   wos_log("[gpu] display mode %dx%d%s%s%s",(int)PSXDisplay.DisplayModeNew.x,
+           (int)PSXDisplay.DisplayModeNew.y,PSXDisplay.InterlacedNew?" interlaced":"",
+           PSXDisplay.RGB24New?" 24-bit":"",PSXDisplay.PAL?" PAL":"");
+  }
+}
+#endif
+
 void CALLBACK GL_GPUwriteStatus(unsigned long gdata)
 {
 unsigned long lCommand=(gdata>>24)&0xff;
@@ -1410,6 +1428,9 @@ switch(lCommand)
 
       PSXDisplay.DisplayModeNew.y=PSXDisplay.Height*PSXDisplay.Double;
       ChangeDispOffsetsYGl();
+#ifdef __WARPOS__
+      wos_log_dispmode();
+#endif
 
       #ifdef DISP_DEBUG
       sprintf(txtbuffer, "settingDispInfo07 height %d %d\r\n", screenWidth, screenHeight);
@@ -1491,6 +1512,9 @@ switch(lCommand)
         STATUSREG|=GPUSTATUS_RGB24;
    else STATUSREG&=~GPUSTATUS_RGB24;
 
+#ifdef __WARPOS__
+   wos_log_dispmode();
+#endif
      CHECK_SCREEN_INFO();
      #ifdef DISP_DEBUG
      sprintf(txtbuffer, "settingDispInfo08 %d %d %d %d\r\n", PSXDisplay.DisplayPosition.x, PSXDisplay.DisplayPosition.y, screenWidth, screenHeight);
@@ -1548,7 +1572,7 @@ switch(lCommand)
 
 BOOL bNeedWriteUpload=FALSE;
 
-__inline void FinishedVRAMWrite(void)
+static __inline void FinishedVRAMWrite(void)
 {
  if (ReadbackEnabled())
  {
@@ -1575,7 +1599,7 @@ __inline void FinishedVRAMWrite(void)
  VRAMWrite.RowsRemaining = 0;
 }
 
-__inline void FinishedVRAMRead(void)
+static __inline void FinishedVRAMRead(void)
 {
  g_readbackState = READBACK_IDLE;
 
@@ -2028,6 +2052,38 @@ if(iDataWriteMode==DR_NORMAL)
      {
       gpuDataC=gpuDataP=0;
       BeginEfbDrawContext();
+#ifdef __WARPOS__
+      if (wos_pmc_on) {
+        extern int framesdone;
+#define wos_framesdone_gt(n) (framesdone > (n))
+        uint32_t _c0, _c1;
+        uint64_t _t[4];
+        static int _slowlog = 24;
+        _t[0] = wos_prof_ticks[WOS_PROF_TEXSEL]; _t[1] = wos_prof_ticks[WOS_PROF_TEXUP];
+        _t[2] = wos_prof_ticks[WOS_PROF_GLEND]; _t[3] = wos_prof_ticks[WOS_PROF_STATE];
+        extern uint32_t wos_ts_ticks[4];
+        uint32_t _ts[3] = { wos_ts_ticks[0], wos_ts_ticks[1], wos_ts_ticks[2] };
+        __asm__ volatile("mfspr %0,937" : "=r"(_c0));
+        primFunc[gpuCommand]((unsigned char *)gpuDataM);
+        __asm__ volatile("mfspr %0,937" : "=r"(_c1));
+        wos_prim_cyc[gpuCommand] += _c1 - _c0;
+        wos_prim_n[gpuCommand]++;
+        /* the slow ones: where their time went (time-base ticks) */
+        if (_c1 - _c0 > 80000 && _slowlog > 0 && wos_framesdone_gt(2200)) {
+          _slowlog--;
+          wos_log("[slowprim] cmd %02x %lu kcycles: texsel %lu (clutkey %lu search %lu load %lu) texup %lu glend %lu state %lu ticks; tp %d twin %d data %08lx %08lx %08lx",
+                  gpuCommand, (unsigned long)((_c1 - _c0) / 1000),
+                  (unsigned long)(wos_prof_ticks[WOS_PROF_TEXSEL] - _t[0]),
+                  (unsigned long)(wos_ts_ticks[0] - _ts[0]), (unsigned long)(wos_ts_ticks[1] - _ts[1]),
+                  (unsigned long)(wos_ts_ticks[2] - _ts[2]),
+                  (unsigned long)(wos_prof_ticks[WOS_PROF_TEXUP] - _t[1]),
+                  (unsigned long)(wos_prof_ticks[WOS_PROF_GLEND] - _t[2]),
+                  (unsigned long)(wos_prof_ticks[WOS_PROF_STATE] - _t[3]),
+                  GlobalTexturePage, (int)bUsingTWin,
+                  (unsigned long)gpuDataM[0], (unsigned long)gpuDataM[2], (unsigned long)gpuDataM[4]);
+        }
+      } else
+#endif
       primFunc[gpuCommand]((unsigned char *)gpuDataM);
       EndEfbDrawContext();
 

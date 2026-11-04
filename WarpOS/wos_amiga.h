@@ -14,6 +14,7 @@
 #include <exec/ports.h>
 #include <dos/dos.h>
 #include <dos/var.h>
+#include <dos/dostags.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <graphics/gfx.h>

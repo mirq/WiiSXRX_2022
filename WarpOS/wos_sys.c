@@ -14,6 +14,9 @@
 
 #include "wos_sys.h"
 #include "wos_amiga.h"
+#pragma pack(push, 2)
+#include <dos/dosextens.h>
+#pragma pack(pop)
 
 #ifndef WOS_BUILD_STAMP
 #define WOS_BUILD_STAMP "unknown"
@@ -240,6 +243,135 @@ int wos_env_int(const char *name, int def)
     return (v && *v) ? atoi(v) : def;
 }
 
+/* ---- The 7410's performance counters (SetEnv WSX_PMC 1) --------------- */
+
+int wos_pmc_on;
+uint32_t wos_prim_cyc[256], wos_prim_n[256];
+uint32_t wos_pmc_acc[WOS_PROF_N][4];
+static uint32_t s_pmc_sel[4], s_pmc_t0[4];
+
+#define MTSPR(n, v) __asm__ volatile("mtspr " #n ",%0" : : "r"(v))
+#define MFSPR(n) ({ uint32_t _v; __asm__ volatile("mfspr %0," #n : "=r"(_v)); _v; })
+
+/* MMCR0 (952) and MMCR1 (956) can be written only in supervisor mode; the
+ * counters then run in both modes and are read through UPMC1-4. */
+void wos_pmc_init(void)
+{
+    const char *sel = wos_getenv("WSX_PMCSEL");
+    uint32_t v[4], u[4], old;
+    static volatile uint32_t buf[64 * 1024];   /* 256 KB: a read every 32 bytes misses */
+    int i;
+
+    if (!wos_env_int("WSX_PMC", 0))
+        return;
+    s_pmc_sel[0] = 1; s_pmc_sel[1] = 5; s_pmc_sel[2] = 5; s_pmc_sel[3] = 2;
+    if (sel && *sel)
+        sscanf(sel, "%lu,%lu,%lu,%lu", (unsigned long *)&s_pmc_sel[0], (unsigned long *)&s_pmc_sel[1],
+               (unsigned long *)&s_pmc_sel[2], (unsigned long *)&s_pmc_sel[3]);
+    old = Super();
+    MTSPR(952, 0x80000000u);            /* freeze while setting up */
+    MTSPR(953, 0); MTSPR(954, 0); MTSPR(957, 0); MTSPR(958, 0);
+    MTSPR(956, ((s_pmc_sel[2] & 31) << 27) | ((s_pmc_sel[3] & 31) << 22));
+    MTSPR(952, ((s_pmc_sel[0] & 127) << 6) | (s_pmc_sel[1] & 63));
+    v[0] = MFSPR(952); v[1] = MFSPR(956);
+    User(old);
+    wos_pmc_on = 1;
+    wos_log("[pmc] events %lu,%lu,%lu,%lu (MMCR0 %08lx MMCR1 %08lx)",
+            (unsigned long)s_pmc_sel[0], (unsigned long)s_pmc_sel[1], (unsigned long)s_pmc_sel[2],
+            (unsigned long)s_pmc_sel[3], (unsigned long)v[0], (unsigned long)v[1]);
+    /* a check of what the events count: 8192 reads 32 bytes apart, twice
+     * (the second time the 256 KB are partly in the L2), and a busy loop */
+    for (i = 0; i < 2; i++) {
+        uint32_t j, sum = 0;
+        wos_pmc_read(u);
+        for (j = 0; j < 64 * 1024; j += 8)
+            sum += buf[j];
+        wos_pmc_read(v);
+        wos_log("[pmc] 8192 strided reads: %lu %lu %lu %lu (%lu)",
+                (unsigned long)(v[0] - u[0]), (unsigned long)(v[1] - u[1]),
+                (unsigned long)(v[2] - u[2]), (unsigned long)(v[3] - u[3]), (unsigned long)sum);
+    }
+    {
+        volatile uint32_t k = 0;
+        uint32_t t0 = wos_tb_lo(), j;
+        wos_pmc_read(u);
+        for (j = 0; j < 100000; j++)
+            k += j;
+        wos_pmc_read(v);
+        wos_log("[pmc] 100000-turn loop: %lu %lu %lu %lu in %lu time-base ticks (%lu Hz)",
+                (unsigned long)(v[0] - u[0]), (unsigned long)(v[1] - u[1]),
+                (unsigned long)(v[2] - u[2]), (unsigned long)(v[3] - u[3]),
+                (unsigned long)(wos_tb_lo() - t0), (unsigned long)wos_tb_hz());
+    }
+    wos_pmc_read(s_pmc_t0);
+}
+
+/* Per frame: the whole, the stages the [prof] line takes out of the cpu
+ * share, and what is left (translated code, branch tests, hardware). */
+void wos_pmc_report(unsigned frames)
+{
+    static const struct { int st; const char *name; } part[] = {
+        { WOS_PROF_GPU, "gpu" }, { WOS_PROF_RCNT, "rcnt" }, { WOS_PROF_IRQ, "irq" },
+        { WOS_PROF_GTE, "gte" }, { WOS_PROF_HW, "hw" }, { WOS_PROF_BT, "bt" },
+    };
+    uint32_t now[4], tot[4], rest[4];
+    char line[600];
+    int len, i, k;
+
+    if (!wos_pmc_on || !frames)
+        return;
+    wos_pmc_read(now);
+    for (k = 0; k < 4; k++) {
+        tot[k] = now[k] - s_pmc_t0[k];
+        /* gte and hw run inside the cpu share; hw also holds the gpu */
+        rest[k] = tot[k] - wos_pmc_acc[WOS_PROF_GPU][k] - wos_pmc_acc[WOS_PROF_RCNT][k]
+                  - wos_pmc_acc[WOS_PROF_IRQ][k] - wos_pmc_acc[WOS_PROF_GTE][k]
+                  - (wos_pmc_acc[WOS_PROF_HW][k] - wos_pmc_acc[WOS_PROF_GPU][k]);
+    }
+    len = snprintf(line, sizeof line, "[pmc] per frame (k): all %lu/%lu/%lu/%lu",
+                   (unsigned long)(tot[0] / frames / 1000), (unsigned long)(tot[1] / frames / 1000),
+                   (unsigned long)(tot[2] / frames / 1000), (unsigned long)(tot[3] / frames / 1000));
+    for (i = 0; i < (int)(sizeof part / sizeof part[0]); i++) {
+        const uint32_t *a = wos_pmc_acc[part[i].st];
+        len += snprintf(line + len, sizeof line - len, ", %s %lu/%lu/%lu/%lu", part[i].name,
+                        (unsigned long)(a[0] / frames / 1000), (unsigned long)(a[1] / frames / 1000),
+                        (unsigned long)(a[2] / frames / 1000), (unsigned long)(a[3] / frames / 1000));
+    }
+    snprintf(line + len, sizeof line - len, ", rest %lu/%lu/%lu/%lu",
+             (unsigned long)(rest[0] / frames / 1000), (unsigned long)(rest[1] / frames / 1000),
+             (unsigned long)(rest[2] / frames / 1000), (unsigned long)(rest[3] / frames / 1000));
+    wos_log("%s", line);
+    /* the GPU commands with the most PMC1 events: count and average a frame */
+    {
+        int top[8], n;
+        len = snprintf(line, sizeof line, "[pmc] gpu commands (k events, count, each):");
+        for (n = 0; n < 8; n++) {
+            int best = -1, j;
+            for (i = 0; i < 256; i++) {
+                for (j = 0; j < n; j++)
+                    if (top[j] == i)
+                        break;
+                if (j < n || !wos_prim_n[i])
+                    continue;
+                if (best < 0 || wos_prim_cyc[i] > wos_prim_cyc[best])
+                    best = i;
+            }
+            if (best < 0)
+                break;
+            top[n] = best;
+            len += snprintf(line + len, sizeof line - len, " %02x %lu/%lu/%lu", best,
+                            (unsigned long)(wos_prim_cyc[best] / frames / 1000),
+                            (unsigned long)(wos_prim_n[best] / frames),
+                            (unsigned long)(wos_prim_cyc[best] / wos_prim_n[best]));
+        }
+        wos_log("%s", line);
+        memset(wos_prim_cyc, 0, sizeof wos_prim_cyc);
+        memset(wos_prim_n, 0, sizeof wos_prim_n);
+    }
+    memset(wos_pmc_acc, 0, sizeof wos_pmc_acc);
+    memcpy(s_pmc_t0, now, sizeof now);
+}
+
 /* ---- The log ---------------------------------------------------------- */
 
 /* A log line per event written straight to disk cost OpenSWOS 60 ms a frame:
@@ -247,24 +379,122 @@ int wos_env_int(const char *name, int def)
 #define LOG_BUF_SIZE (64 * 1024)
 #define LOG_PATH     "PROGDIR:wiistation.log"
 
-static char     s_log_buf[LOG_BUF_SIZE];
+static char     s_log_bufs[2][LOG_BUF_SIZE];
+static char    *s_log_buf = s_log_bufs[0];
+static int      s_log_cur;
 static uint32_t s_log_len;
 static uint64_t s_log_last_us;
 static int      s_log_started;
+static int      s_shutting_down;
 
+/* The flush as a DOS packet the PPC does not wait for (as wos_cdasync's
+ * reads): the file stays open (shared, so the bridge can read it), the
+ * lines go out of the other buffer, and only the next flush waits for the
+ * previous write, long done by then. An open, append and close every 2 s
+ * stopped the PPC 20-28 ms, a frame lost in every 120. At the shutdown
+ * and in the exit hooks the writes are synchronous again. SetEnv
+ * WSX_LOGASYNC 0: fopen/fwrite/fclose every time, as before. */
+static BPTR s_lfh;
+static struct FileHandle *s_lfhp;
+static struct MsgPort *s_lport;
+static struct StandardPacket *s_lpkt;
+static int s_lpend, s_log_async = -1;
+
+static void log_wait(void)
+{
+    if (s_lpend) {
+        WaitPort(s_lport);
+        GetMsg(s_lport);
+        s_lpend = 0;
+    }
+}
+
+static void wos_log_close(void)
+{
+    log_wait();
+    s_log_async = 0;
+    if (s_lfh)
+        Close(s_lfh);
+    s_lfh = 0;
+    s_lfhp = NULL;
+    if (s_lport)
+        DeleteMsgPort(s_lport);
+    s_lport = NULL;
+}
+
+static int log_open_async(void)
+{
+    if (s_lfh)
+        return 1;
+    if (!s_log_started) {
+        BPTR f = Open((CONST_STRPTR)LOG_PATH, MODE_NEWFILE);
+        if (f)
+            Close(f);
+        s_log_started = 1;
+    }
+    s_lfh = Open((CONST_STRPTR)LOG_PATH, MODE_READWRITE);
+    if (!s_lfh)
+        return 0;
+    Seek(s_lfh, 0, OFFSET_END);
+    s_lfhp = (struct FileHandle *)BADDR(s_lfh);
+    s_lport = CreateMsgPort();
+    if (!s_lpkt)
+        s_lpkt = wos_alloc_ppc(sizeof(*s_lpkt));
+    if (!s_lfhp->fh_Type || !s_lport || !s_lpkt) {
+        wos_log_close();
+        return 0;
+    }
+    atexit(wos_log_close);
+    return 1;
+}
+
+uint32_t wos_log_flushes, wos_log_flush_us;
 void wos_log_flush(void)
 {
     FILE *f;
+    uint32_t t0;
 
     if (!s_log_len)
         return;
-    f = fopen(LOG_PATH, s_log_started ? "a" : "w");
-    if (f) {
-        fwrite(s_log_buf, 1, s_log_len, f);
-        fclose(f);
+    wos_log_flushes++;
+    t0 = wos_tb_lo();
+    if (s_log_async < 0)
+        s_log_async = wos_env_int("WSX_LOGASYNC", 1);
+    if (s_log_async && !s_shutting_down && log_open_async()) {
+        struct StandardPacket *p = s_lpkt;
+        log_wait();
+        wos_cache_flush_data(s_log_buf, s_log_len);
+        memset(p, 0, sizeof(*p));
+        p->sp_Msg.mn_Node.ln_Name = (char *)&p->sp_Pkt;
+        p->sp_Msg.mn_ReplyPort = s_lport;
+        p->sp_Pkt.dp_Link = &p->sp_Msg;
+        p->sp_Pkt.dp_Port = s_lport;
+        p->sp_Pkt.dp_Type = ACTION_WRITE;
+        p->sp_Pkt.dp_Arg1 = s_lfhp->fh_Arg1;
+        p->sp_Pkt.dp_Arg2 = (LONG)s_log_buf;
+        p->sp_Pkt.dp_Arg3 = (LONG)s_log_len;
+        wos_cache_flush_data(p, sizeof(*p));
+        PutMsg(s_lfhp->fh_Type, &p->sp_Msg);
+        s_lpend = 1;
+        s_log_cur ^= 1;
+        s_log_buf = s_log_bufs[s_log_cur];
+        s_log_len = 0;
+        wos_log_flush_us += (wos_tb_lo() - t0) / (wos_tb_hz() / 1000000u);
+        return;
+    }
+    if (s_lfh) {
+        log_wait();
+        Write(s_lfh, s_log_buf, (LONG)s_log_len);
+    } else {
+        f = fopen(LOG_PATH, s_log_started ? "a" : "w");
+        if (f) {
+            fwrite(s_log_buf, 1, s_log_len, f);
+            fclose(f);
+        }
     }
     s_log_started = 1;
     s_log_len = 0;
+    wos_log_flush_us += (wos_tb_lo() - t0) / (wos_tb_hz() / 1000000u);
 }
 
 void wos_log(const char *fmt, ...)
@@ -402,7 +632,6 @@ static ULONG wos_exc_handler(struct EXCContext *ec)
 }
 
 /* exit() from anywhere but our own shutdown would leave no trace */
-static int s_shutting_down;
 static void wos_atexit(void)
 {
     if (s_shutting_down)
@@ -427,6 +656,104 @@ static void wos_atexit(void)
         wos_log("%s", line);
     }
     wos_log_flush();
+}
+
+/* ---- A sampling profiler: SetEnv WSX_PMCPROF <cycles> ------------------
+ * PMC1 counts cycles from 0x80000000 - period; when it turns negative the
+ * performance monitor interrupt (MMCR0[PMXE], cleared by the 7410 when it
+ * fires) gives the interrupted pc and lr to this handler, which stores them
+ * and arms the next one. wos_pcprof_poll (every present) starts it at
+ * present WSX_PMCPROF_AT (default 400) and writes T:pcsamp.bin when the
+ * buffer is full: "PCS1", count, the run-time address of wos_log (for
+ * addr2line), the dynarec buffer's start and size, then count x (pc, lr). */
+#define PCS_MAX 65536
+static uint32_t s_pcs[PCS_MAX][2];
+static volatile uint32_t s_pcs_n;
+static uint32_t s_pcs_period;
+static volatile int s_pcs_state;        /* 0 off, 1 sampling, 2 full, 3 written */
+static APTR s_pcs_handler;
+extern char *wos_recmem_base;
+extern uint32_t wos_recmem_size;
+
+static ULONG wos_pcs_handler(struct EXCContext *ec)
+{
+    uint32_t n = s_pcs_n;
+    if (s_pcs_state == 1) {
+        if (n < PCS_MAX) {
+            s_pcs[n][0] = ec->ec_UPC.ec_SRR0;
+            s_pcs[n][1] = ec->ec_LR;
+            s_pcs_n = n + 1;
+        }
+        if (n + 1 >= PCS_MAX)
+            s_pcs_state = 2;
+    }
+    MTSPR(953, 0x80000000u - s_pcs_period);
+    if (s_pcs_state == 1)
+        MTSPR(952, MFSPR(952) | 0x04008000u);      /* PMXE | PMC1CE */
+    else
+        MTSPR(952, MFSPR(952) & ~0x04008000u);
+    return EXCRETURN_ABORT;
+}
+
+void wos_pcprof_poll(unsigned presents)
+{
+    static int at = -2;
+    if (at == -2) {
+        s_pcs_period = (uint32_t)wos_env_int("WSX_PMCPROF", 0);
+        at = s_pcs_period && wos_pmc_on ? wos_env_int("WSX_PMCPROF_AT", 400) : -1;
+    }
+    if (at < 0)
+        return;
+    if (s_pcs_state == 0 && presents >= (unsigned)at) {
+        struct TagItem tags[] = {
+            { EXCATTR_CODE, (ULONG)wos_pcs_handler },
+            { EXCATTR_DATA, 0 },
+            { EXCATTR_TASK, 0 },
+            { EXCATTR_EXCID, EXCF_PERFMON },
+            { EXCATTR_FLAGS, EXCF_GLOBAL | EXCF_LARGECONTEXT },
+            { EXCATTR_NAME, (ULONG)"WiiStation prof" },
+            { EXCATTR_PRI, 0 },
+            { TAG_END, 0 }
+        };
+        uint32_t old;
+        s_pcs_handler = SetExcHandler(tags);
+        wos_log("[pcprof] sampling every %lu cycles from present %u%s", (unsigned long)s_pcs_period,
+                presents, s_pcs_handler ? "" : " (no handler)");
+        wos_log_flush();
+        if (!s_pcs_handler) {
+            at = -1;
+            return;
+        }
+        s_pcs_state = 1;
+        old = Super();
+        MTSPR(953, 0x80000000u - s_pcs_period);
+        MTSPR(952, MFSPR(952) | 0x04008000u);
+        User(old);
+    } else if (s_pcs_state == 2) {
+        BPTR fh;
+        uint32_t hdr[5];
+        uint32_t old = Super();
+        MTSPR(952, MFSPR(952) & ~0x04008000u);
+        User(old);
+        RemExcHandler(s_pcs_handler);
+        s_pcs_state = 3;
+        hdr[0] = 0x50435331; hdr[1] = s_pcs_n; hdr[2] = (uint32_t)wos_log;
+        hdr[3] = (uint32_t)wos_recmem_base; hdr[4] = wos_recmem_size;
+        fh = Open((CONST_STRPTR)"T:pcsamp.bin", MODE_NEWFILE);
+        if (fh) {
+            Write(fh, hdr, sizeof hdr);
+            Write(fh, s_pcs, s_pcs_n * 8);
+            {   /* then the blocks: count, count x (PSX pc, host code) */
+                extern int wos_rec_blockmap(uint32_t *out, int max);
+                uint32_t nb = (uint32_t)wos_rec_blockmap(&s_pcs[0][0], PCS_MAX);
+                Write(fh, &nb, 4);
+                Write(fh, s_pcs, nb * 8);
+            }
+            Close(fh);
+        }
+        wos_log("[pcprof] %lu samples written to T:pcsamp.bin (wos_log at %p, code buffer %p)",
+                (unsigned long)s_pcs_n, (void *)wos_log, (void *)wos_recmem_base);
+    }
 }
 
 static void wos_exc_install(void)

@@ -38,14 +38,20 @@ unsigned int wos_idle_found, wos_idle_skips;
  * wos_idle_on: after two seconds without a skip the finder rests for one,
  * then looks again for a few frames. Called once a frame. */
 int wos_idle_on = 1;
+/* Each look that finds nothing doubles the next rest, up to 20 s: a Tekken 3
+ * fight has no loop to skip, and its looks still cost ~1 ms a frame on
+ * average (5.5k branch tests a frame). A skip starts over at 1 s. */
+#define REST_FIRST 60
+#define REST_MAX   1200
 void wos_idle_frame(void)
 {
-    static unsigned last_skips, quiet, rest, look;
+    static unsigned last_skips, quiet, rest, look, next_rest = REST_FIRST;
     if (wos_idle_skips != last_skips) {
         last_skips = wos_idle_skips;
         quiet = 0;
         wos_idle_on = 1;
         rest = look = 0;
+        next_rest = REST_FIRST;
         return;
     }
     if (rest) {
@@ -58,14 +64,16 @@ void wos_idle_frame(void)
     if (look) {
         if (!--look) {
             wos_idle_on = 0;
-            rest = 60;
+            rest = next_rest;
+            if (next_rest < REST_MAX)
+                next_rest = next_rest * 2 > REST_MAX ? REST_MAX : next_rest * 2;
         }
         return;
     }
     if (++quiet >= 120) {
         quiet = 0;
         wos_idle_on = 0;
-        rest = 60;
+        rest = next_rest;
     }
 }
 

@@ -18,8 +18,6 @@ SetEnv MGLPPC_HOSTPRI -1
 ; GPU-side present copy: the back buffer keeps its pixels after a present,
 ; as the Wii's EFB does.
 SetEnv MGLPPC_CPPRESENT 1
-Stack 65536
-Run >NIL: minigl_ppc_host >NIL:
-Wait 6
+; MiniGL starts minigl_ppc_host itself (PROGDIR:, LIBS: or $MGLPPC_HOST).
 Stack 1048576
 WiiStation <line>

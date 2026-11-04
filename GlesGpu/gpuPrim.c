@@ -975,8 +975,101 @@ static inline void SetRenderState ( unsigned int DrawAttributes )
 
 ////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+GLuint wos_gp_select(int page, int mode, unsigned clut, int semi);
+/* timed as the texture lookup it replaces */
+/* SetEnv WSX_GPPROBE x,y (PSX coordinates): the palette-lookup primitives
+ * over that point in frames 290-291, logged with their texels */
+static void wos_gp_probe(void)
+{
+    static int px = -2, py;
+    extern int framesdone;
+    extern void wos_log(const char *fmt, ...);
+    int xmin, xmax, ymin, ymax, u, v;
+    if (px == -2) {
+        extern const char *wos_getenv(const char *name);
+        const char *e = wos_getenv("WSX_GPPROBE");
+        px = -1;
+        if (e) { if (!strcmp(e, "all")) px = 99999; else sscanf(e, "%d,%d", &px, &py); }
+    }
+    if (px < 0 || framesdone != 290)
+        return;
+    xmin = min(lx0, min(lx1, min(lx2, lx3))); xmax = max(lx0, max(lx1, max(lx2, lx3)));
+    ymin = min(ly0, min(ly1, min(ly2, ly3))); ymax = max(ly0, max(ly1, max(ly2, ly3)));
+    if (px != 99999 && (px < xmin || px > xmax || py < ymin || py > ymax))
+        return;
+    { extern int wos_gp_last_slot; wos_log("[gpprobe] slot %d", wos_gp_last_slot); }
+    wos_log("[gpprobe] f%d xy %d,%d-%d,%d page %d mode %d clut %04x semi %d abr %d uv %d,%d %d,%d %d,%d %d,%d tw %d",
+            framesdone, xmin, ymin, xmax, ymax, GlobalTexturePage, GlobalTextTP, (unsigned)ulClutID,
+            DrawSemiTrans, (int)GlobalTextABR, gl_ux[0], gl_vy[0], gl_ux[1], gl_vy[1], gl_ux[2], gl_vy[2],
+            gl_ux[3], gl_vy[3], (int)bUsingTWin);
+    {   /* the palette and the texels at the first vertex */
+        int cx = (ulClutID << 4) & 0x3f0, cy = (ulClutID >> 6) & 0x1ff, i;
+        char line[200]; int len = 0;
+        for (i = 0; i < 16; i++)
+            len += snprintf(line + len, sizeof line - len, "%04x ", GETLE16(psxVuw + cx + cy * 1024 + i));
+        wos_log("[gpprobe]   palette %s", line);
+        len = 0;
+        u = gl_ux[0]; v = gl_vy[0];
+        for (i = 0; i < 16; i++) {
+            int uu = (u + i) & 255;
+            int b = psxVub[((GlobalTexturePage & 15) << 7) + ((((GlobalTexturePage >> 4) << 8) + v) << 11) + (uu >> 1)];
+            len += snprintf(line + len, sizeof line - len, "%x", GlobalTextTP ? b : ((uu & 1) ? b >> 4 : b & 15));
+        }
+        wos_log("[gpprobe]   texels from uv %d,%d: %s", u, v, line);
+        if (GlobalTextTP == 0 && ulClutID == 0x7f12) {   /* the name sprite: all its texels */
+            int vv, uu2;
+            for (vv = 0; vv < 16; vv++) {
+                char row[80]; int n = 0;
+                for (uu2 = 64; uu2 < 112 && n < 70; uu2++) {
+                    int b = psxVub[((GlobalTexturePage & 15) << 7) + ((((GlobalTexturePage >> 4) << 8) + vv) << 11) + (uu2 >> 1)];
+                    row[n++] = "0123456789abcdef"[(uu2 & 1) ? b >> 4 : b & 15];
+                }
+                row[n] = 0;
+                wos_log("[gpprobe]   v%2d %s", vv, row);
+            }
+        }
+    }
+}
+
+static GLuint wos_gp_sel(int page, int mode, unsigned clut, int semi)
+{
+    GLuint r;
+    extern int wosgl_gp_on(void);
+    if (!wosgl_gp_on())
+        return 0;
+    WOS_PROF(WOS_PROF_TEXSEL, r = wos_gp_select(page, mode, clut, semi));
+    return r;
+}
+#endif
+#ifdef __WARPOS__
+/* SetEnv WSX_PRIMPROBE n: every primitive of frame n through SetRenderMode,
+ * logged (diagnosis) */
+int wos_shot_req, wos_probe_frame = -1;  /* F8 (wos_input.c) */
+static void wos_prim_probe(unsigned int attr)
+{
+    static int f = -2;
+    extern int framesdone;
+    extern void wos_log(const char *fmt, ...);
+    if (f == -2) {
+        extern const char *wos_getenv(const char *name);
+        const char *e = wos_getenv("WSX_PRIMPROBE");
+        f = e ? atoi(e) : -1;
+        wos_log("[prim] probe at frame %d (now %d)", f, framesdone);
+    }
+    if (framesdone != f && framesdone != wos_probe_frame)
+        return;
+    wos_log("[prim] a %08x xy %d,%d %d,%d %d,%d %d,%d tex %d semi %d abr %d tp %d page %d clut %04x uv %d,%d %d,%d %d,%d tw %d mask %d",
+            attr, lx0, ly0, lx1, ly1, lx2, ly2, lx3, ly3, (int)bDrawTextured, (int)DrawSemiTrans,
+            (int)GlobalTextABR, (int)GlobalTextTP, (int)GlobalTexturePage, (unsigned)ulClutID,
+            gl_ux[0], gl_vy[0], gl_ux[1], gl_vy[1], gl_ux[2], gl_vy[2], (int)bUsingTWin, (int)sSetMask);
+}
+#endif
 static void SetRenderMode ( unsigned int DrawAttributes, BOOL bSCol )
 {
+#ifdef __WARPOS__
+    wos_prim_probe(DrawAttributes);
+#endif
     /* CaptureFramebufferTexture() sets this again only for the current sprite. */
     gFramebufferTextureCoordsValid = FALSE;
 
@@ -1025,8 +1118,21 @@ static void SetRenderMode ( unsigned int DrawAttributes, BOOL bSCol )
         texChgType = 0;
         int loadTextureType;
         GLuint currTex;
-        if ( bUsingTWin )       { currTex = LoadTextureWnd ( GlobalTexturePage, GlobalTextTP, ulClutID ); loadTextureType = TEX_TYPE_WIN; }
+        if ( bUsingTWin )       {
+#ifdef __WARPOS__
+                                  { extern unsigned int wos_twin_n; wos_twin_n++; }
+#endif
+                                  currTex = LoadTextureWnd ( GlobalTexturePage, GlobalTextTP, ulClutID ); loadTextureType = TEX_TYPE_WIN; }
         else if ( bUsingMovie ) { currTex = LoadTextureMovie(); loadTextureType = TEX_TYPE_MOV; }
+#ifdef __WARPOS__
+        /* 4- and 8-bit textures of the one-plane kinds (opaque, or 0.5B +
+         * 0.5F) from the GPU's palette lookup (gpuTexture.c wos_gp_select):
+         * the UVs stay the page's own, the cell is placed by wos_gl */
+        else if ( GlobalTextTP < 2 && !GlobalTextIL && ( !DrawSemiTrans || GlobalTextABR == 0 ) &&
+                  ( currTex = wos_gp_sel ( GlobalTexturePage, GlobalTextTP, ulClutID, DrawSemiTrans ) ) != 0 )
+                                { loadTextureType = TEX_TYPE_SUB; gl_ux[8] = 3;  /* both kinds of texel */
+                                  wos_gp_probe(); }
+#endif
         else                    { WOS_CRUMB(73); WOS_PROF(WOS_PROF_TEXSEL, currTex = SelectSubTextureS ( GlobalTextTP, ulClutID )); WOS_CRUMB(74); loadTextureType = TEX_TYPE_SUB; }
 
         glSetTextureType(gl_ux[8], loadTextureType, texChgType);
@@ -1726,7 +1832,8 @@ int UploadScreen ( int Position )
         if (clearMovieGarbageFlg == 1 && clearMovieGarbageCnt++ < 3)
         {
 #ifdef __WARPOS__
-            { extern unsigned int wos_vram_gen; wos_vram_gen++; }
+            { extern unsigned int wos_vram_gen, wos_vram_row_gen[512]; int r_; wos_vram_gen++;
+              for (r_ = 0; r_ < 512; r_++) wos_vram_row_gen[r_] = wos_vram_gen; }
 #endif
             int realMovieHeight = clearMovieGarbageY1 - clearMovieGarbageY0;
             int clearH = (xrUploadArea.y1 - xrUploadArea.y0 - realMovieHeight);
@@ -2302,6 +2409,9 @@ static void ClampToPSXScreenOffset ( short *x0, short *y0, short *x1, short *y1 
 static void cmdDrawAreaStart ( unsigned char * baseAddr )
 {
     uint32_t gdata = GETLE32 ( ( uint32_t* ) baseAddr );
+#ifdef __WARPOS__
+    bDisplayNotSet = TRUE;                                /* the scissor follows the area */
+#endif
 
     drawX = gdata & 0x3ff;                                // for soft drawing
     if ( drawX >= 1024 ) drawX = 1023;
@@ -2338,6 +2448,9 @@ static void cmdDrawAreaStart ( unsigned char * baseAddr )
 static void cmdDrawAreaEnd ( unsigned char * baseAddr )
 {
     uint32_t gdata = GETLE32 ( ( uint32_t* ) baseAddr );
+#ifdef __WARPOS__
+    bDisplayNotSet = TRUE;                                /* the scissor follows the area */
+#endif
 
     drawW = gdata & 0x3ff;                                // for soft drawing
     if ( drawW >= 1024 ) drawW = 1023;
@@ -3335,6 +3448,24 @@ static inline void TitleFillArea(short x0, short y0, short width, short height, 
         unsigned short colTmp = SWAP16_C(colInfo);
         InvalidateTextureArea(x0, y0, width, height);
 
+#ifdef __WARPOS__
+        /* A clear of the whole drawing area (Tekken 3: every frame, ~1.1 ms
+         * of 16-bit stores into memory the 7410 reaches slowly): the
+         * framebuffer's texels are sampled through the capture path and
+         * read back through the readback, never from this copy. Smaller
+         * fills (title screens built in VRAM) still go in.
+         * SetEnv WSX_SOFTFILL 1: every fill, as before. */
+        {
+            extern int wos_env_int(const char *name, int def);
+            static int full = -1;
+            if (full < 0)
+                full = wos_env_int("WSX_SOFTFILL", 0);
+            if (!full && width >= 256 && height >= 192 &&
+                x0 <= PSXDisplay.DrawArea.x0 && y0 <= PSXDisplay.DrawArea.y0 &&
+                x1 >= PSXDisplay.DrawArea.x1 && y1 >= PSXDisplay.DrawArea.y1)
+                return;
+        }
+#endif
         for (int yy = y0; yy < y1; yy++)
         {
             unsigned short *ptr = psxVuw + (yy << 10) + x0;

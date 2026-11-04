@@ -422,7 +422,8 @@ void SysUpdate(void)
     }
     /* SetEnv WSX_QUIT 1 quits through the normal path (memory cards saved,
      * MiniGL closed): what a remote session uses instead of Break. */
-    if (framesdone % 50 == 0 && wos_env_take("WSX_QUIT"))
+    /* every 300 frames: an ENV: read is a 68k trip of several ms here */
+    if (framesdone % 300 == 0 && wos_env_take("WSX_QUIT"))
         act |= WOS_ACT_QUIT;
     if (act) {
         if ((act & WOS_ACT_QUIT) && !(s_pending_actions & WOS_ACT_QUIT))
@@ -585,6 +586,11 @@ int main(int argc, char **argv)
         wos_sys_shutdown();
         return 20;
     }
+    /* MiniGL's settings (MiniGL starts its 68k host itself) */
+    {
+        extern void wos_mgl_settings(void);
+        wos_mgl_settings();
+    }
 
     /* The image may be relative to the Shell's directory: name it fully
      * before running from the program's own drawer. Every word that is not
@@ -630,6 +636,11 @@ int main(int argc, char **argv)
         wos_noidle = wos_env_int("WSX_NOIDLE", 0);
         if (wos_nogate || wos_noidle)
             wos_log("event gate %s, idle skip %s", wos_nogate ? "off" : "on", wos_noidle ? "off" : "on");
+    }
+    wos_pmc_init();
+    {
+        extern void wos_av_init(void);
+        wos_av_init();
     }
     if (wos_env_int("WSX_GTEBENCH", 0))
         gte_bench();

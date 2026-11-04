@@ -792,14 +792,21 @@ static void wos_emit_bt_stubs(void)
 	ADDI(1, 1, 16);
 	BLR();
 
-	/* The end of a j/jal/branch block: r3 the target pc, r4 its cycles.
-	 * Stores both, takes the branch test when due (backward: also while
-	 * the idle-loop finder looks) and goes to the dispatcher -- the block
-	 * itself then ends in four instructions. */
+	/* The end of a j/jal/branch block: bl here with r4 its cycles and r5
+	 * the target's code (its psxRecLUT entry, 0 when not compiled); the
+	 * word after the bl is the target pc, read through the link register
+	 * only on the slow paths. Adds the cycles, takes the branch test when
+	 * due (backward: also while the idle-loop finder looks), and otherwise
+	 * goes straight on to the target's code: the dispatcher only for a
+	 * target not yet compiled or after the branch test, which also covers
+	 * stop and a flushed I-cache (both come with WOS_EVENT_NOW). No pc
+	 * store on the way through, and the next event r31-relative when it
+	 * lies within 32 KB of psxRegs. */
 	{
-		u32 *gate, *gate2, *call, *call2, *disp;
+		u32 *gate, *call, *call2, *disp;
+		s32 nev = (s32)((u32)&wos_next_event - (u32)&psxRegs);
 		wos_stub_exit_back = (u32)ppcPtr;
-		STW(3, OFFSET(&psxRegs, &psxRegs.pc), 31);
+		MTCTR(5);
 		LWZ(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
 		ADD(0, 0, 4);
 		STW(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
@@ -809,44 +816,71 @@ static void wos_emit_bt_stubs(void)
 		BNE_L(call);
 		B_L(gate);
 		wos_stub_exit_gated = (u32)ppcPtr;
-		STW(3, OFFSET(&psxRegs, &psxRegs.pc), 31);
+		MTCTR(5);
 		LWZ(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
 		ADD(0, 0, 4);
 		STW(0, OFFSET(&psxRegs, &psxRegs.cycle), 31);
 		B_DST(gate);
-		LWZ(3, OFFSET(&psxRegs, &psxRegs.cycle), 31);
-		LIW(4, (u32)&wos_next_event);
-		LWZ(4, 0, 4);
-		SUBF(3, 4, 3);
-		CMPWI(3, 0);
-		BLT_L(disp);
+		if (nev >= -32768 && nev < 32768) {
+			LWZ(4, nev, 31);
+		} else {
+			LIS(4, ((u32)&wos_next_event + 0x8000) >> 16);
+			LWZ(4, (u32)&wos_next_event & 0xffff, 4);
+		}
+		INSTR = 0x7c840051;             /* subf. r4,r4,r0: cycle - next event */
+		BGE_L(call2);
+		CMPLWI(5, 0);
+		BEQ_L(disp);
+		BCTR();
 		B_DST(call);
+		B_DST(call2);
+		MFLR(3);
+		LWZ(3, 0, 3);
+		STW(3, OFFSET(&psxRegs, &psxRegs.pc), 31);
 		LIW(12, (u32)psxBranchTest);
 		MTCTR(12);
 		BCTRL();
-		B_DST(disp);
 		{
 			s32 d = (s32)(wos_dispatch - (u32)ppcPtr);
 			INSTR = 0x48000000 | (d & 0x3fffffc);       /* b wos_dispatch */
 		}
-		(void)gate2; (void)call2;
+		B_DST(disp);
+		MFLR(3);
+		LWZ(3, 0, 3);
+		STW(3, OFFSET(&psxRegs, &psxRegs.pc), 31);
+		{
+			s32 d = (s32)(wos_dispatch - (u32)ppcPtr);
+			INSTR = 0x48000000 | (d & 0x3fffffc);       /* b wos_dispatch */
+		}
+		wos_log("dynarec: exit stub, next event %s", nev >= -32768 && nev < 32768 ? "off r31" : "absolute");
 	}
 	wos_cache_flush_code((void *)start, (u32)ppcPtr - start);
 }
 
-/* A j/jal/branch block's end through the exit stub, when there is one. */
+/* A j/jal/branch block's end through the exit stub, when there is one.
+ * SetEnv WSX_LINK 0: always through the dispatcher, as before. */
+static int wos_link = -1;
 static int wos_emit_block_exit(u32 branchPC, int backward, int cycles)
 {
 	if (!wos_stub_exit_gated || !wos_dispatch || wos_nogate || cycles > 0x7fff)
 		return 0;
+	if (wos_link < 0)
+		wos_link = wos_env_int("WSX_LINK", 1);
 	FlushAllHWReg();
-	LIW(3, branchPC);
 	LI(4, cycles);
+	if (wos_link && psxRecLUT[branchPC >> 16]) {
+		u32 a = PC_REC(branchPC);
+		LIS(5, (a + 0x8000) >> 16);
+		LWZ(5, a & 0xffff, 5);
+	} else {
+		LI(5, 0);
+	}
 	{
 		extern int wos_noidle;
 		u32 t = backward && !wos_noidle ? wos_stub_exit_back : wos_stub_exit_gated;
 		s32 d = (s32)(t - (u32)ppcPtr);
-		INSTR = 0x48000000 | (d & 0x3fffffc);           /* b the stub */
+		INSTR = 0x48000001 | (d & 0x3fffffc);           /* bl the stub */
+		INSTR = branchPC;                               /* its pc, data */
 	}
 	return 1;
 }
@@ -930,6 +964,31 @@ static int iLoadTest() {
 	return 0;
 }
 
+#ifdef __WARPOS__
+/* A load in a branch's delay slot goes through the interpreter
+ * (psxDelayTest) only when the target's first instruction reads or writes
+ * the loaded register: Tekken 3 has loads in the delay slots of hot loops,
+ * and each took the C path, a branch test and a block exit (1.7% of a fight
+ * frame in psxDelayTest alone). Loads outside delay slots never get the
+ * delay either. SetEnv WSX_DELAYFAST 0: every such load as before. */
+extern int psxTestLoadDelay(int reg, u32 tmp);
+extern u32 intFakeFetch(u32 pc);
+static int wos_delayfast = -1;
+static int wos_delay_hazard(u32 target)
+{
+	if (wos_delayfast < 0)
+		wos_delayfast = wos_env_int("WSX_DELAYFAST", 1);
+	if (!wos_delayfast)
+		return 1;
+	if ((psxRegs.code >> 26) == 0x32)       /* LWC2: no GPR is loaded */
+		return 0;
+	return psxTestLoadDelay(_Rt_, intFakeFetch(target)) != 0;
+}
+#define WOS_DELAY_HAZARD(t) wos_delay_hazard(t)
+#else
+#define WOS_DELAY_HAZARD(t) 1
+#endif
+
 /* set a pending branch */
 static void SetBranch() {
 	int treg;
@@ -984,7 +1043,7 @@ static void iJump(u32 branchPC) {
 	psxRegs.code = PSXMu32(pc);
 	pc+=4;
 
-	if (iLoadTest() == 1) {
+	if (iLoadTest() == 1 && WOS_DELAY_HAZARD(branchPC)) {
 		iFlushRegs(0);
 		LIW(0, psxRegs.code);
 		STW(0, OFFSET(&psxRegs, &psxRegs.code), GetHWRegSpecial(PSXREGS));
@@ -1082,7 +1141,7 @@ static void iBranch(u32 branchPC, int savectx) {
 
 	// the delay test is only made when the branch is taken
 	// savectx == 0 will mean that :)
-	if (savectx == 0 && iLoadTest() == 1) {
+	if (savectx == 0 && iLoadTest() == 1 && WOS_DELAY_HAZARD(branchPC)) {
 		iFlushRegs(0);
 		LIW(0, psxRegs.code);
 		STW(0, OFFSET(&psxRegs, &psxRegs.code), GetHWRegSpecial(PSXREGS));
@@ -1255,8 +1314,8 @@ static void rec##f() { \
 #if defined(__WARPOS__) && defined(WOS_PROFCPU)
 #define WOS_GTE_WRAP(f) \
 static u32 wos_gtec_##f[2]; \
-static void wos_gtet_##f(struct psxCP2Regs *r) { u32 t0 = wos_tb_lo(), dt; gte##f(r); dt = wos_tb_lo() - t0; \
-	wos_prof_ticks[WOS_PROF_GTE] += dt; wos_gte_ops++; wos_gtec_##f[0] += dt; wos_gtec_##f[1]++; }
+static void wos_gtet_##f(struct psxCP2Regs *r) { u32 t0 = wos_tb_lo(), dt; WOS_PMC_T0; gte##f(r); dt = wos_tb_lo() - t0; \
+	WOS_PMC_ADD(WOS_PROF_GTE); wos_prof_ticks[WOS_PROF_GTE] += dt; wos_gte_ops++; wos_gtec_##f[0] += dt; wos_gtec_##f[1]++; }
 #define WOS_GTE_FN(f) wos_gtet_##f
 #else
 #define WOS_GTE_WRAP(f)
@@ -1401,14 +1460,41 @@ static void recMVMVA2() {
     cop2readypc = pc + (psxCP2time[_fFunct_(psxRegs.code)]<<2);
 }
 
+#ifdef __WARPOS__
+char *wos_recmem_base;
+u32 wos_recmem_size;
+/* every translated block's (PSX pc, host code) for the [pcprof] dump;
+ * returns how many were stored */
+int wos_rec_blockmap(u32 *out, int max)
+{
+	int i, n = 0;
+	for (i = 0; i < 0x200000 / 4 && n < max; i++) {
+		u32 h = ((u32 *)recRAM)[i];
+		if (h) { out[2 * n] = 0x80000000u | (i << 2); out[2 * n + 1] = h; n++; }
+	}
+	for (i = 0; i < 0x80000 / 4 && n < max; i++) {
+		u32 h = ((u32 *)recROM)[i];
+		if (h) { out[2 * n] = 0xbfc00000u | (i << 2); out[2 * n + 1] = h; n++; }
+	}
+	return n;
+}
+#endif
 static int allocMem() {
 	int i;
 
 #ifdef __WARPOS__
 	if (!recMem)
 		recMem = (char *)wos_alloc_ppc(RECMEM_SIZE);
-	if (!recRAM)
-		recRAM = (char *)wos_alloc_ppc(0x200000 + 0x080000);
+	wos_recmem_base = recMem;
+	wos_recmem_size = RECMEM_SIZE;
+	/* recRAM - psxM a multiple of 64 KB: a store's translation slot is then
+	 * one addis off r30 (psxM) away (wos_fast_write) */
+	if (!recRAM) {
+		char *p = (char *)wos_alloc_ppc(0x200000 + 0x080000 + 0x10000);
+		if (p)
+			p += ((u32)psxM - (u32)p) & 0xffff;
+		recRAM = p;
+	}
 	if (!recMem || !recRAM) {
 		wos_log("dynarec: no memory for the code buffer (%d KB)", (RECMEM_SIZE + 0x280000) >> 10);
 		return -1;
@@ -2507,6 +2593,8 @@ static void recDIVU() {
 
 #ifdef __WARPOS__
 static void wos_mem_prepare(void);
+static int wos_wr_direct(void);
+static int wos_wr_src = 4;      /* the register a fast store stores from */
 #endif
 
 static void preMemRead()
@@ -2550,7 +2638,19 @@ static void preMemWrite(int size)
 //	} else {
 //		MR(PutHWRegSpecial(ARG2), GetHWReg32(_Rt_));
 //	}
+#ifdef __WARPOS__
+	{
+		/* a fast store stores from Rt's own register; only its slow end
+		 * (out of line) copies it to r4 for the C accessor */
+		int rt = GetHWReg32(_Rt_);
+		if (rt > 4 && rt != 11 && rt != 12 && wos_wr_direct())
+			wos_wr_src = rt;
+		else
+			MR(PutHWRegSpecial(ARG2), rt);
+	}
+#else
     MR(PutHWRegSpecial(ARG2), GetHWReg32(_Rt_));
+#endif
 
 #ifdef __WARPOS__
 	wos_mem_prepare();
@@ -2746,6 +2846,57 @@ static void wos_emit_mem_stubs(void)
 	wos_cache_flush_code((void *)start, (u32)ppcPtr - start);
 }
 
+/* The slow ends of inline accesses, emitted after the block's last
+ * instruction (wos_emit_slow_paths): the fast path falls straight through,
+ * with no taken branch over a call (2 instructions less in the hot code,
+ * which the 7410's 32 KB instruction cache bounds). Each entry is the bne
+ * to patch, where to come back and the stub to call. SetEnv WSX_OUTLINE 0:
+ * inline as before. */
+#define WOS_SLOW_MAX 256
+static struct { u32 *bne; u32 *back; u32 stub; int dst, ext, src; } wos_slow[WOS_SLOW_MAX];
+static int wos_slow_n, wos_outline = -1;
+
+static int wos_slow_add(u32 *bne, u32 stub)
+{
+	if (wos_outline < 0)
+		wos_outline = wos_env_int("WSX_OUTLINE", 1);
+	if (!wos_outline || wos_slow_n >= WOS_SLOW_MAX)
+		return 0;
+	wos_slow[wos_slow_n].bne = bne;
+	wos_slow[wos_slow_n].back = ppcPtr;
+	wos_slow[wos_slow_n].stub = stub;
+	wos_slow[wos_slow_n].dst = -1;
+	wos_slow[wos_slow_n].ext = 0;
+	wos_slow[wos_slow_n].src = -1;
+	wos_slow_n++;
+	return 1;
+}
+
+static void wos_emit_slow_paths(void)
+{
+	int i;
+	for (i = 0; i < wos_slow_n; i++) {
+		s32 d;
+		B_DST(wos_slow[i].bne);
+		if (wos_slow[i].src >= 0) {     /* a store from its own register */
+			MR(4, wos_slow[i].src);
+		}
+		wos_emit_bl(wos_slow[i].stub);
+		if (wos_slow[i].dst >= 0) {     /* a load into its own register */
+			if (wos_slow[i].ext == 1) {
+				EXTSB(wos_slow[i].dst, 3);
+			} else if (wos_slow[i].ext == 2) {
+				EXTSH(wos_slow[i].dst, 3);
+			} else if (wos_slow[i].dst != 3) {
+				MR(wos_slow[i].dst, 3);
+			}
+		}
+		d = (s32)((u32)wos_slow[i].back - (u32)ppcPtr);
+		INSTR = 0x48000000 | (d & 0x3fffffc);
+	}
+	wos_slow_n = 0;
+}
+
 static void wos_fast_read(int size, u32 func)
 {
 	u32 *notram, *done;
@@ -2753,6 +2904,20 @@ static void wos_fast_read(int size, u32 func)
 
 	ReleaseArgs();
 	RLWINM_(12, 3, 0, 3, 10);       /* addr & 0x1fe00000: not the first 2 MB */
+	if (wos_outline != 0 && wos_slow_n < WOS_SLOW_MAX) {
+		u32 *bne = ppcPtr;
+		INSTR = 0x40820000;         /* bne -> the slow end, patched at the block's end */
+		RLWINM(12, 3, 0, 11, 31);
+		stub_load(size, 3, GetHWRegSpecial(PSXMEM), 12);   /* r30 = psxM */
+		if (wos_slow_add(bne, wos_stub_rd[stub_k(size)]))
+			return;
+		/* off after all: the slow call inline, as below */
+		B_L(done);
+		*bne = *bne | (((s16)((u32)ppcPtr - (u32)bne)) & 0xfffc);
+		wos_emit_bl(wos_stub_rd[stub_k(size)]);
+		B_DST(done);
+		return;
+	}
 	BNE_L(notram);
 	RLWINM(12, 3, 0, 11, 31);
 	stub_load(size, 3, GetHWRegSpecial(PSXMEM), 12);   /* r30 = psxM */
@@ -2762,11 +2927,22 @@ static void wos_fast_read(int size, u32 func)
 	B_DST(done);
 }
 
+/* whether the next store takes the out-of-line fast path for sure (it may
+ * then store from Rt's register, wos_wr_src) */
+static int wos_wr_direct(void)
+{
+	if (wos_outline < 0)
+		wos_outline = wos_env_int("WSX_OUTLINE", 1);
+	return wos_fast_on() && wos_outline && psxMemWLUT[0x8000] && wos_slow_n < WOS_SLOW_MAX;
+}
+
 static void wos_fast_write(int size, u32 func)
 {
-	u32 *notram, *done;
+	u32 *notram, *done, *bne;
+	int src = wos_wr_src;
 	(void)func;
 
+	wos_wr_src = 4;
 	ReleaseArgs();
 	/* not while the cache is isolated (that empties the write table and
 	 * flushes every translation): the stub then finds no page */
@@ -2775,17 +2951,64 @@ static void wos_fast_write(int size, u32 func)
 		return;
 	}
 	RLWINM_(12, 3, 0, 3, 10);
-	BNE_L(notram);
+	bne = ppcPtr;
+	INSTR = 0x40820000;
 	RLWINM(12, 3, 0, 11, 31);
-	stub_store(size, 4, GetHWRegSpecial(PSXMEM), 12);
-	RLWINM(12, 3, 0, 11, 29);       /* the word's translation: recRAM + that */
-	LIW(11, (u32)recRAM);
+	stub_store(size, src, GetHWRegSpecial(PSXMEM), 12);
+	/* the word's translation: recRAM + that (r12 is already the word's
+	 * offset for a word store) */
+	if (size != 4)
+		RLWINM(12, 3, 0, 11, 29);
+	if ((((u32)recRAM - (u32)psxM) & 0xffff) == 0) {
+		ADDIS(11, GetHWRegSpecial(PSXMEM), ((u32)recRAM - (u32)psxM) >> 16);
+	} else {
+		LIW(11, (u32)recRAM);
+	}
 	LI(0, 0);
 	STWX(0, 11, 12);
+	if (wos_outline != 0 && wos_slow_add(bne, wos_stub_wr[stub_k(size)])) {
+		wos_slow[wos_slow_n - 1].src = src != 4 ? src : -1;
+		return;
+	}
 	B_L(done);
+	notram = bne;
 	B_DST(notram);
 	wos_emit_bl(wos_stub_wr[stub_k(size)]);
 	B_DST(done);
+}
+
+/* A load straight into Rt's register (ext: 0 zero-extended, 1 extsb,
+ * 2 extsh); the slow end moves the C accessor's r3 there. The value then
+ * needs no copy out of r3 when the next access takes r3 for its address
+ * (a block of loads paid an mr each). 0: not done, the caller goes on as
+ * before. */
+static int wos_read_to(int size, int ext)
+{
+	int d;
+	u32 *bne;
+
+	if (!wos_fast_on() || !_Rt_ || wos_outline == 0 || wos_slow_n >= WOS_SLOW_MAX)
+		return 0;
+	if (wos_outline < 0)
+		wos_outline = wos_env_int("WSX_OUTLINE", 1);
+	if (!wos_outline)
+		return 0;
+	ReleaseArgs();
+	d = PutHWReg32(_Rt_);
+	RLWINM_(12, 3, 0, 3, 10);
+	bne = ppcPtr;
+	INSTR = 0x40820000;
+	RLWINM(12, 3, 0, 11, 31);
+	stub_load(size, d, GetHWRegSpecial(PSXMEM), 12);
+	if (ext == 1) {
+		EXTSB(d, d);
+	} else if (ext == 2) {
+		EXTSH(d, d);
+	}
+	wos_slow_add(bne, wos_stub_rd[stub_k(size)]);
+	wos_slow[wos_slow_n - 1].dst = d;
+	wos_slow[wos_slow_n - 1].ext = ext;
+	return 1;
 }
 
 #define WOS_MEM_READ(size, func) do { if (wos_fast_on()) wos_fast_read(size, (u32)func); else CALLFunc((u32)func); } while (0)
@@ -2842,6 +3065,7 @@ static void recLB() {
     printFunctionLog();
     #endif // SHOW_DEBUG
 	preMemRead();
+	if (wos_read_to(1, 1)) return;
 	WOS_MEM_READ(1, psxMemRead8);
 	if (_Rt_) {
 		EXTSB(PutHWReg32(_Rt_), GetHWRegSpecial(RETVAL));
@@ -2884,6 +3108,7 @@ static void recLBU() {
     printFunctionLog();
     #endif // SHOW_DEBUG
 	preMemRead();
+	if (wos_read_to(1, 0)) return;
 	WOS_MEM_READ(1, psxMemRead8);
 
 	if (_Rt_) {
@@ -2929,6 +3154,7 @@ static void recLH() {
 	}
 
 	preMemRead();
+	if (wos_read_to(2, 2)) return;
 	WOS_MEM_READ(2, psxMemRead16);
 	if (_Rt_) {
 		EXTSH(PutHWReg32(_Rt_), GetHWRegSpecial(RETVAL));
@@ -3026,6 +3252,7 @@ static void recLHU() {
 	}
 
 	preMemRead();
+	if (wos_read_to(2, 0)) return;
 	WOS_MEM_READ(2, psxMemRead16);
 	if (_Rt_) {
 		SetDstCPUReg(3);
@@ -3120,6 +3347,7 @@ static void recLW() {
 	}
 
 	preMemRead();
+	if (wos_read_to(4, 0)) return;
 	WOS_MEM_READ(4, psxMemRead32);
 	if (_Rt_) {
 		SetDstCPUReg(3);
@@ -4372,11 +4600,20 @@ __inline static void recRecompile() {
 #endif
 
 	pcold = pc = psxRegs.pc;
+#ifdef __WARPOS__
+	wos_slow_n = 0;
+#endif
 
 #ifdef __WARPOS__
 	/* PsyQ's movie decoder: the block is a call to its C version
 	 * (WarpOS/wos_vlc.c), which leaves the pc at the return address. */
+	/* These helpers read psxRegs.pc, and a linked block end jumps in
+	 * without storing it (wos_emit_block_exit): the block's own pc first.
+	 * Without it Tekken 3's intro movie decoded nothing and the stale pc
+	 * sent the game into its kernel's data. */
 	if (wos_vlc_match(pc)) {
+		LIW(PutHWRegSpecial(PSXPC), pc);
+		FlushAllHWReg();
 		CALLFunc((u32)wos_vlc_block);
 		FlushAllHWReg();
 		CALLFunc((u32)psxBranchTest);
@@ -4384,6 +4621,8 @@ __inline static void recRecompile() {
 		branch = 1;
 	}
 	else if (wos_hyb_match(pc)) {
+		LIW(PutHWRegSpecial(PSXPC), pc);
+		FlushAllHWReg();
 		CALLFunc((u32)wos_hyb_block);
 		Return();
 		branch = 1;
@@ -4446,6 +4685,9 @@ __inline static void recRecompile() {
 	  iRet();
   }
   branch = 0;
+#ifdef __WARPOS__
+  wos_emit_slow_paths();
+#endif
 
   u32 endRange = (u32)(u8*)ppcPtr-(u32)(u8*)ptr;
 #if defined(__WARPOS__) && defined(WOS_PROFCPU)
@@ -4453,6 +4695,28 @@ __inline static void recRecompile() {
 	wos_bprof[wos_bp].size = endRange / 4;
 #endif
 #ifdef __WARPOS__
+  {   /* SetEnv WSX_BDUMP pc (hex): the block's MIPS words and its PPC code
+       * into T:block.txt, to look at what the translation makes */
+	static u32 dumppc = 1;
+	if (dumppc == 1) {
+		extern const char *wos_getenv(const char *name);
+		const char *e = wos_getenv("WSX_BDUMP");
+		dumppc = e ? (u32)strtoul(e, NULL, 16) : 0;
+	}
+	if (dumppc && pcold == dumppc) {
+		FILE *f = fopen("T:block.txt", "w");
+		if (f) {
+			u32 a;
+			fprintf(f, "mips %08x..%08x\n", (unsigned)pcold, (unsigned)pc);
+			for (a = pcold; a < pc; a += 4)
+				fprintf(f, "m %08x %08x\n", (unsigned)a, (unsigned)LOAD_SWAP32p(PSXM(a)));
+			for (a = 0; a < endRange; a += 4)
+				fprintf(f, "p %08x\n", (unsigned)((u32 *)ptr)[a / 4]);
+			fclose(f);
+		}
+		dumppc = 0;
+	}
+  }
   wos_cache_flush_code((void*)ptr, endRange);
 #else
   DCFlushRange((void*)ptr, endRange);

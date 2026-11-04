@@ -170,6 +170,49 @@ static void gl_bench(void)
     mglSwitchDisplay();
 }
 
+/* MiniGL's 68k host (minigl_ppc_host) serves one session and ends with it.
+ * MiniGL's library starts one itself when its port is missing (MiniGL
+ * branch wiistation, R200PPCHostEnsure): WiiStation only gives MiniGL the
+ * settings the WiiStation-R200 script makes, those not already set.
+ * A host that is already running (the script's) is used as it is. */
+#define WOS_HOST_PORT "MiniGLPPC.R200.Host.1"
+
+static int host_port_up(void)
+{
+    struct MsgPort *p;
+    Forbid();
+    p = FindPort((CONST_STRPTR)WOS_HOST_PORT);
+    Permit();
+    return p != NULL;
+}
+
+static void env_default(const char *name, const char *value)
+{
+    char buf[8];
+    if (GetVar((CONST_STRPTR)name, (STRPTR)buf, sizeof(buf), GVF_GLOBAL_ONLY) < 0)
+        SetVar((CONST_STRPTR)name, (CONST_STRPTR)value, -1, GVF_GLOBAL_ONLY);
+}
+
+void wos_mgl_settings(void)
+{
+    /* MiniGL's short TCL vertices (read when the client opens): every
+     * vertex WiiStation draws has W = 1 (MGLPPC_TCL6: x,y,z,colour,s,t),
+     * and Z only matters with the depth test (MGLPPC_TCL5: x,y,colour,s,t
+     * without it). Tekken 3 fights ~49 -> ~51 fps: the vertex stream is
+     * written across the Zorro bus. SetEnv MGLPPC_TCL6 0: 7 dwords. */
+    env_default("MGLPPC_TCL6", "1");
+    env_default("MGLPPC_TCL5", "1");
+    if (host_port_up())
+        return;
+    /* for the host MiniGL is about to start */
+    DeleteVar((CONST_STRPTR)"MGLPPC_LEASE", GVF_GLOBAL_ONLY);
+    DeleteVar((CONST_STRPTR)"MINIGL_CTILE", GVF_GLOBAL_ONLY);   /* a tiled target reads back scrambled */
+    env_default("MGLPPC_NOALTIVEC", "1");
+    env_default("MGLPPC_CPEMIT", "1");
+    env_default("MGLPPC_HOSTPRI", "-1");
+    env_default("MGLPPC_CPPRESENT", "1");
+}
+
 int wos_video_open(void)
 {
     int windowed = wos_env_int("WSX_WINDOW", 0);
@@ -178,9 +221,16 @@ int wos_video_open(void)
     s_height   = wos_env_int("WSX_HEIGHT", 480);
     s_bilinear = wos_env_int("WSX_BILINEAR", 1);
 
+    wos_mgl_settings();     /* main() already did */
     if (!MiniGLOpen()) {
         wos_log("MiniGLOpen failed: is minigl_ppc.dll in PROGDIR: and minigl_ppc_host running?");
         return -1;
+    }
+    {   /* where the DLL sits, for the [pcprof] samples */
+        extern void *MiniGLBase;
+        extern void *dllGetProcAddress(void *hinst, char *name);
+        wos_log("[diag] MiniGL MGLGetDispatchTable at %p",
+                MiniGLBase ? dllGetProcAddress(MiniGLBase, (char *)"MGLGetDispatchTable") : NULL);
     }
     mglChooseWindowMode(windowed ? GL_TRUE : GL_FALSE);
     mglChoosePixelDepth(16);
@@ -198,6 +248,11 @@ int wos_video_open(void)
         ModifyIDCMP((struct Window *)s_window,
                     IDCMP_RAWKEY | IDCMP_CLOSEWINDOW | IDCMP_INACTIVEWINDOW);
 
+    glViewport(0, 0, s_width, s_height);
+    {   /* GPU palette lookup: where its dependent read lands (wos_gl.c) */
+        extern void wosgl_gp_init(int w, int h);
+        wosgl_gp_init(s_width, s_height);
+    }
     glViewport(0, 0, s_width, s_height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -310,6 +365,35 @@ static void draw_textured_quad(void)
     glEnd();
 }
 
+/* SetEnv WSX_SHOWFPS 1: the emulation's frames a second (60 is full speed)
+ * and the game's own (presents) at the top left, over each half second. */
+static uint32_t s_osd_frames, s_osd_presents;
+static uint64_t s_osd_t0;
+static char s_osd_text[24];
+static int s_osd_on = -1;
+
+static void osd_draw(void)
+{
+    extern void wosgl_draw_osd(const char *text);
+    uint64_t now = wos_now_us();
+    static uint32_t checks;
+    if (s_osd_on < 0 || !(++checks & 1023))
+        s_osd_on = wos_env_int("WSX_SHOWFPS", 0);
+    if (!s_osd_on)
+        return;
+    if (!s_osd_t0)
+        s_osd_t0 = now;
+    if (now - s_osd_t0 >= 500000) {
+        unsigned long f10 = (unsigned long)((uint64_t)s_osd_frames * 10000000u / (now - s_osd_t0));
+        unsigned long p = (unsigned long)(((uint64_t)s_osd_presents * 1000000u + (now - s_osd_t0) / 2) / (now - s_osd_t0));
+        snprintf(s_osd_text, sizeof s_osd_text, "%lu.%lu/%lu", f10 / 10, f10 % 10, p);
+        s_osd_t0 = now;
+        s_osd_frames = s_osd_presents = 0;
+    }
+    if (s_osd_text[0])
+        wosgl_draw_osd(s_osd_text);
+}
+
 void wos_video_present_vram(const void *src, int pitch, int rgb24, int w, int h)
 {
     wosgl_gl_touched();      /* the primitives drawn so far first; GL state changes here */
@@ -346,6 +430,7 @@ void wos_video_present_blank(void)
     wos_video_swap();
 }
 
+static unsigned s_stat_presents_total;
 void wos_video_swap(void)
 {
     wosgl_gl_touched();      /* the primitives drawn so far first; GL state changes here */
@@ -354,6 +439,45 @@ void wos_video_swap(void)
     if (!s_open)
         return;
     WOS_CRUMB(21);
+    osd_draw();
+    s_osd_presents++;
+    {   /* SetEnv WSX_SHOT n (or F8): present n read back into T:shot.ppm (to look at
+         * the picture: the bridge's screenshot of the MiniGL screen is grey) */
+        static int shot = -2;
+        if (shot == -2)
+            shot = wos_env_int("WSX_SHOT", -1);
+        extern int wos_shot_req;
+        if ((shot >= 0 && s_stat_presents_total == (unsigned)shot) || wos_shot_req) {
+            wos_shot_req = 0;
+            unsigned char *rb = malloc((size_t)s_width * s_height * 4);
+            BPTR fh;
+            if (rb) {
+                glReadPixels(0, 0, s_width, s_height, GL_RGBA, GL_UNSIGNED_BYTE, rb);
+                fh = Open((CONST_STRPTR)"T:shot.ppm", MODE_NEWFILE);
+                if (fh) {
+                    char hdr[32];
+                    int y, x, n = snprintf(hdr, sizeof hdr, "P6\n%d %d\n255\n", s_width, s_height);
+                    unsigned char *row = malloc((size_t)s_width * 3);
+                    Write(fh, hdr, n);
+                    for (y = s_height - 1; row && y >= 0; y--) {
+                        const unsigned char *p = rb + (size_t)y * s_width * 4;
+                        for (x = 0; x < s_width; x++) {
+                            row[x * 3] = p[x * 4]; row[x * 3 + 1] = p[x * 4 + 1]; row[x * 3 + 2] = p[x * 4 + 2];
+                        }
+                        Write(fh, row, s_width * 3);
+                    }
+                    free(row);
+                    Close(fh);
+                    wos_log("[shot] present %d in T:shot.ppm", shot);
+                }
+                free(rb);
+            }
+            wosgl_gl_touched();
+        }
+        s_stat_presents_total++;
+        if (wos_pmc_on)
+            wos_pcprof_poll(s_stat_presents_total);
+    }
     t0 = wos_now_us();
     mglSwitchDisplay();
     s_stat_swap_us += wos_now_us() - t0;
@@ -361,6 +485,11 @@ void wos_video_swap(void)
 }
 
 /* ---- Pacing ------------------------------------------------------------ */
+
+/* busy time a frame (from the end of the last wait to this limit call),
+ * by ms: <14, 14, 15, 16, 16.7, 17, 18, 19, 20-24, >=25 */
+static uint32_t s_busy_hist[10], s_busy_max;
+static uint64_t s_busy_from;
 
 void wos_video_limit(float hz)
 {
@@ -370,6 +499,37 @@ void wos_video_limit(float hz)
         return;
     period = (uint64_t)(1000000.0f / hz);
     now = wos_now_us();
+    if (s_busy_from) {
+        uint32_t b = (uint32_t)(now - s_busy_from);
+        int k = b < 14000 ? 0 : b < 15000 ? 1 : b < 16000 ? 2 : b < 16700 ? 3 : b < 17000 ? 4 :
+                b < 18000 ? 5 : b < 19000 ? 6 : b < 20000 ? 7 : b < 25000 ? 8 : 9;
+        s_busy_hist[k]++;
+        if (b > s_busy_max)
+            s_busy_max = b;
+        {   /* a slow frame: where its time went (time-base ticks -> us) */
+            static uint32_t prev[WOS_PROF_N], fl_prev, flus_prev;
+            static int spikes = 40;
+            extern uint32_t wos_log_flushes, wos_log_flush_us;
+            uint32_t per = wos_tb_hz() / 1000000u;
+            if (b >= 25000 && spikes > 0 && s_stat_presents_total > 200) {
+                char line[400];
+                int i, len;
+                spikes--;
+                len = snprintf(line, sizeof line, "[spike] present %u: %lu us; log flushes %lu (%lu us); stages us:",
+                               s_stat_presents_total, (unsigned long)b,
+                               (unsigned long)(wos_log_flushes - fl_prev), (unsigned long)(wos_log_flush_us - flus_prev));
+                for (i = 0; i < WOS_PROF_N && len < (int)sizeof line - 16; i++) {
+                    uint32_t d = (wos_prof_ticks[i] - prev[i]) / per;
+                    if (d >= 500)
+                        len += snprintf(line + len, sizeof line - len, " %d:%lu", i, (unsigned long)d);
+                }
+                wos_log("%s", line);
+            }
+            memcpy(prev, wos_prof_ticks, sizeof prev);
+            fl_prev = wos_log_flushes;
+            flus_prev = wos_log_flush_us;
+        }
+    }
     if (!s_next_frame_us || now > s_next_frame_us + 8 * period) {
         /* first frame, or far behind: start again from now */
         s_next_frame_us = now + period;
@@ -384,12 +544,14 @@ void wos_video_limit(float hz)
         s_stat_late++;
     }
     s_next_frame_us += period;
+    s_busy_from = wos_now_us();
 }
 
 void wos_video_frame_stats(void)
 {
     uint64_t now, span;
 
+    s_osd_frames++;
     if (++s_stat_frames < 300)
         return;
     now = wos_now_us();
@@ -404,6 +566,7 @@ void wos_video_frame_stats(void)
             wos_prof_ticks[i] = 0;
         }
         wos_pc_report();
+        wos_pmc_report(s_stat_frames);
         /* rcnt holds lace and spu; irq holds cd */
         wos_log("[prof] us per frame %lu: gpu %lu, rcnt %lu (lace/present %lu, spu %lu), irq %lu (cd read %lu), mdec %lu, the rest (cpu) %lu",
                 (unsigned long)(span / s_stat_frames), st[WOS_PROF_GPU], st[WOS_PROF_RCNT],
@@ -417,6 +580,62 @@ void wos_video_frame_stats(void)
                     st[WOS_PROF_STATE], st[WOS_PROF_DRAW], st[WOS_PROF_GLEND], (unsigned long)(wos_draws / s_stat_frames),
                     st[WOS_PROF_TEXSEL]);
             wos_draws = 0;
+            {
+                extern unsigned int wos_vtx_sent, wos_quads_sent;
+                wos_log("[prof] transformed path: %lu vertices a frame, %lu quads (as 2 triangles)",
+                        (unsigned long)(wos_vtx_sent / s_stat_frames), (unsigned long)(wos_quads_sent / s_stat_frames));
+                wos_vtx_sent = wos_quads_sent = 0;
+            }
+            {   /* inside the lookup: CLUT key, cache search, load (upload included); calls */
+                extern uint32_t wos_ts_ticks[4];
+                extern unsigned int wos_ts_calls;
+                uint64_t per = (uint64_t)wos_tb_hz() / 1000000u * s_stat_frames;
+                { extern unsigned int wos_twin_n; static unsigned int twin_prev;
+                  wos_log("[prof] texture windows: %u lookups a frame", (wos_twin_n - twin_prev) / (unsigned)s_stat_frames);
+                  twin_prev = wos_twin_n; }
+                { extern unsigned int wos_texpair[5][5]; char l[300]; int i, j, n = 0;
+                  n += snprintf(l, sizeof l, "[prof] texture batch ends (from>to, 0 none 1 main 2 semi 3 one 4 other) in 300 frames:");
+                  for (i = 0; i < 5; i++) for (j = 0; j < 5; j++)
+                      if (wos_texpair[i][j] && n < (int)sizeof l - 20) n += snprintf(l + n, sizeof l - n, " %d>%d %u", i, j, wos_texpair[i][j]);
+                  wos_log("%s", l); memset(wos_texpair, 0, sizeof wos_texpair);
+                  { extern unsigned int wos_untex_merged;
+                    extern unsigned int wos_untex_why[6];
+                    wos_log("[prof] untextured primitives drawn in a textured batch: %u a frame; "
+                            "not/joined (no border, no batch, untextured batch, blend, depth, ok): %u %u %u %u %u %u",
+                            wos_untex_merged / (unsigned)s_stat_frames, wos_untex_why[0], wos_untex_why[1],
+                            wos_untex_why[2], wos_untex_why[3], wos_untex_why[4], wos_untex_why[5]);
+                    memset(wos_untex_why, 0, sizeof wos_untex_why);
+                    wos_untex_merged = 0; }
+                  { extern unsigned int wos_lane_joins, wos_lane_flush[3];
+                    wos_log("[prof] second lane: %u joins a frame; flushed by overlap %u, room %u, a third state %u",
+                            wos_lane_joins / (unsigned)s_stat_frames, wos_lane_flush[0], wos_lane_flush[1], wos_lane_flush[2]);
+                    wos_lane_joins = 0; memset(wos_lane_flush, 0, sizeof wos_lane_flush); } }
+                wos_log("[prof] texture lookup inside: CLUT key %lu us, search %lu us, load %lu us; %u lookups a frame",
+                        per ? (unsigned long)(wos_ts_ticks[0] / per) : 0, per ? (unsigned long)(wos_ts_ticks[1] / per) : 0,
+                        per ? (unsigned long)(wos_ts_ticks[2] / per) : 0, wos_ts_calls / (unsigned)s_stat_frames);
+                {
+                    extern unsigned int wos_gp_prims, wos_gp_rows, wos_gp_pals, wos_gp_fall;
+                    extern void wosgl_gp_stats(unsigned *u, unsigned *t);
+                    unsigned u[2], t[2];
+                    wosgl_gp_stats(u, t);
+                    wos_log("[gp] GPU palette lookup a frame: %u primitives (%u fell back), %u index rows and %u palettes converted; uploads %u index (%u texels), %u palette",
+                            wos_gp_prims / (unsigned)s_stat_frames, wos_gp_fall / (unsigned)s_stat_frames,
+                            wos_gp_rows / (unsigned)s_stat_frames, wos_gp_pals / (unsigned)s_stat_frames,
+                            u[0] / (unsigned)s_stat_frames, t[0] / (unsigned)s_stat_frames, u[1] / (unsigned)s_stat_frames);
+                    {
+                        extern unsigned wosgl_gp_fails(int k);
+                        wos_log("[gp] failed uploads so far: %u index, %u palette", wosgl_gp_fails(0), wosgl_gp_fails(1));
+                    }
+                    wos_gp_prims = wos_gp_rows = wos_gp_pals = wos_gp_fall = 0;
+                }
+                {
+                    extern unsigned int wos_ts_probe, wos_ts_hhit;
+                    wos_log("[prof] texture search hash: %u of %u lookups hit", wos_ts_hhit, wos_ts_probe);
+                    wos_ts_probe = wos_ts_hhit = 0;
+                }
+                wos_ts_ticks[0] = wos_ts_ticks[1] = wos_ts_ticks[2] = 0;
+                wos_ts_calls = 0;
+            }
             {
                 extern unsigned int wos_batch_why[6];
                 extern unsigned int wos_tex_seen[64], wos_tex_distinct, wos_tex_onoff, wos_tex_blend, wos_semi_abr[8];
@@ -440,17 +659,76 @@ void wos_video_frame_stats(void)
                 memset(wos_batch_why, 0, sizeof wos_batch_why);
 
             }
-            wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us, %lu partial uploads of %lu texels a frame",
+            { extern unsigned int wos_tex_unsync, wos_defer_rects, wos_defer_flushes;
+            wos_log("[prof] gp1 %lu us, framebuffer reads %lu us (%lu reads), textures: convert %lu us, upload %lu us, %lu partial uploads (%lu with a sync point) of %lu texels a frame; main/semi deferred %lu, flushes %lu in %lu frames",
                     st[WOS_PROF_GP1], st[WOS_PROF_READ], (unsigned long)(wos_prof_reads & 0xff),
                     st[WOS_PROF_TEXCONV], st[WOS_PROF_TEXUP],
-                    (unsigned long)(wos_tex_subs / s_stat_frames), (unsigned long)(wos_tex_texels / s_stat_frames));
-            wos_tex_subs = wos_tex_texels = 0;
+                    (unsigned long)(wos_tex_subs / s_stat_frames), (unsigned long)(wos_tex_unsync / s_stat_frames),
+                    (unsigned long)(wos_tex_texels / s_stat_frames),
+                    (unsigned long)wos_defer_rects, (unsigned long)wos_defer_flushes, (unsigned long)s_stat_frames);
+            wos_tex_subs = wos_tex_texels = wos_tex_unsync = wos_defer_rects = wos_defer_flushes = 0; }
+            { extern unsigned int wos_up_texels[8], wos_up_calls[8];
+              int k;
+              wos_log("[prof] texels sent a frame (calls in %lu frames): new %lu (%lu), whole %lu (%lu), cache %lu (%lu), deferred %lu (%lu), cell clear %lu (%lu), movie %lu (%lu), fb copy %lu (%lu), other %lu (%lu)",
+                      (unsigned long)s_stat_frames,
+                      (unsigned long)(wos_up_texels[0] / s_stat_frames), (unsigned long)wos_up_calls[0],
+                      (unsigned long)(wos_up_texels[1] / s_stat_frames), (unsigned long)wos_up_calls[1],
+                      (unsigned long)(wos_up_texels[2] / s_stat_frames), (unsigned long)wos_up_calls[2],
+                      (unsigned long)(wos_up_texels[3] / s_stat_frames), (unsigned long)wos_up_calls[3],
+                      (unsigned long)(wos_up_texels[4] / s_stat_frames), (unsigned long)wos_up_calls[4],
+                      (unsigned long)(wos_up_texels[5] / s_stat_frames), (unsigned long)wos_up_calls[5],
+                      (unsigned long)(wos_up_texels[6] / s_stat_frames), (unsigned long)wos_up_calls[6],
+                      (unsigned long)(wos_up_texels[7] / s_stat_frames), (unsigned long)wos_up_calls[7]);
+              { extern uint64_t wos_up_ticks[8];
+wos_log("[prof] upload us a frame by kind: new %lu, whole %lu, cache %lu, deferred %lu, cell clear %lu, movie %lu, fb copy %lu, other %lu",
+                        (unsigned long)(per ? wos_up_ticks[0] / per : 0), (unsigned long)(per ? wos_up_ticks[1] / per : 0),
+                        (unsigned long)(per ? wos_up_ticks[2] / per : 0), (unsigned long)(per ? wos_up_ticks[3] / per : 0),
+                        (unsigned long)(per ? wos_up_ticks[4] / per : 0), (unsigned long)(per ? wos_up_ticks[5] / per : 0),
+                        (unsigned long)(per ? wos_up_ticks[6] / per : 0), (unsigned long)(per ? wos_up_ticks[7] / per : 0));
+                for (k = 0; k < 8; k++) wos_up_ticks[k] = 0; }
+              for (k = 0; k < 8; k++) wos_up_texels[k] = wos_up_calls[k] = 0; }
+            { extern unsigned int wos_tex_compress, wos_tex_gc, wos_tex_clearall;
+              extern uint32_t wos_tex_compress_tb;
+              wos_log("[prof] texture cache in %lu frames: %u compactions (%lu us each), %u garbage collections, %u clear-alls",
+                      (unsigned long)s_stat_frames, wos_tex_compress,
+                      (unsigned long)(wos_tex_compress ? (uint64_t)wos_tex_compress_tb * 1000000u / wos_tb_hz() / wos_tex_compress : 0),
+                      wos_tex_gc, wos_tex_clearall);
+              wos_tex_compress = wos_tex_gc = wos_tex_clearall = 0; wos_tex_compress_tb = 0; }
         }
         wos_log("[prof] UploadScreen %lu us, %lu textures made, %lu cd fills; SysUpdate %lu us (input %lu)",
                 st[WOS_PROF_UPSCREEN], (unsigned long)(wos_prof_reads >> 16),
                 (unsigned long)((wos_prof_reads >> 8) & 0xff),
                 st[WOS_PROF_SYS], st[WOS_PROF_INPUT]);
         wos_prof_reads = 0;
+        {
+            extern uint32_t wos_cda_jumps, wos_cda_waits, wos_cda_jump_tb, wos_cda_wait_tb;
+            uint32_t per = wos_tb_hz() / 1000u;
+            extern uint32_t wos_cda_age_tb, wos_cda_age_max, wos_cda_lat_tb, wos_cda_lat_max;
+            wos_log("[prof] cd image in %lu frames: %lu jumps (%lu ms), %lu waits for the read-ahead (%lu ms); "
+                    "read age when needed %lu ms avg %lu max, done after %lu ms avg %lu max",
+                    (unsigned long)s_stat_frames, (unsigned long)wos_cda_jumps,
+                    (unsigned long)(wos_cda_jump_tb / per), (unsigned long)wos_cda_waits,
+                    (unsigned long)(wos_cda_wait_tb / per),
+                    (unsigned long)(wos_cda_waits ? wos_cda_age_tb / per / wos_cda_waits : 0),
+                    (unsigned long)(wos_cda_age_max / per),
+                    (unsigned long)(wos_cda_waits ? wos_cda_lat_tb / per / wos_cda_waits : 0),
+                    (unsigned long)(wos_cda_lat_max / per));
+            {
+                extern uint32_t wos_cda_arrived, wos_cda_arrived_tb;
+                extern uint32_t wos_cda_t_wait, wos_cda_t_get, wos_cda_t_inv;
+                uint32_t pu = per / 1000u;
+                wos_log("[prof] cd image: %lu read-aheads already there when needed (%lu us each to collect); "
+                        "in 300 frames WaitPort %lu us, GetMsg %lu us, buffer invalidate %lu us",
+                        (unsigned long)wos_cda_arrived,
+                        (unsigned long)(wos_cda_arrived ? wos_cda_arrived_tb / pu / wos_cda_arrived : 0),
+                        (unsigned long)(wos_cda_t_wait / pu), (unsigned long)(wos_cda_t_get / pu),
+                        (unsigned long)(wos_cda_t_inv / pu));
+                wos_cda_arrived = wos_cda_arrived_tb = 0;
+                wos_cda_t_wait = wos_cda_t_get = wos_cda_t_inv = 0;
+            }
+            wos_cda_jumps = wos_cda_waits = wos_cda_jump_tb = wos_cda_wait_tb = 0;
+            wos_cda_age_tb = wos_cda_age_max = wos_cda_lat_tb = wos_cda_lat_max = 0;
+        }
         {
             extern unsigned int wos_au_fed, wos_au_under, wos_au_min, wos_au_short, wos_au_feeds;
             wos_log("[audio] %lu frames fed in %lu ms (%lu feeds, %lu short), %lu underruns, least queued %ld",
@@ -570,6 +848,13 @@ void wos_video_frame_stats(void)
                 (unsigned long)(s_stat_wait_us / s_stat_frames));
     }
     s_stat_start_us = now;
+    wos_log("[stats] busy ms a frame: <14 %lu, 14 %lu, 15 %lu, 16 %lu, 16.7 %lu, 17 %lu, 18 %lu, 19 %lu, 20-24 %lu, 25+ %lu; max %lu us",
+            (unsigned long)s_busy_hist[0], (unsigned long)s_busy_hist[1], (unsigned long)s_busy_hist[2],
+            (unsigned long)s_busy_hist[3], (unsigned long)s_busy_hist[4], (unsigned long)s_busy_hist[5],
+            (unsigned long)s_busy_hist[6], (unsigned long)s_busy_hist[7], (unsigned long)s_busy_hist[8],
+            (unsigned long)s_busy_hist[9], (unsigned long)s_busy_max);
+    memset(s_busy_hist, 0, sizeof s_busy_hist);
+    s_busy_max = 0;
     s_stat_frames = s_stat_presents = s_stat_late = 0;
     s_stat_upload_us = s_stat_swap_us = s_stat_wait_us = 0;
 }

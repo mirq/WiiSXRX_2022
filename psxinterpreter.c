@@ -393,7 +393,7 @@ static u32 psxBranchNoDelay(void) {
 	return (u32)-1;
 }
 
-__inline int psxDelayBranchExec(u32 tar) {
+static __inline int psxDelayBranchExec(u32 tar) {
 	execI();
 
 	branch = 0;
@@ -404,7 +404,7 @@ __inline int psxDelayBranchExec(u32 tar) {
 	return 1;
 }
 
-__inline int psxDelayBranchTest(u32 tar1) {
+static __inline int psxDelayBranchTest(u32 tar1) {
 	u32 tar2, tmp1, tmp2;
 
 	tar2 = psxBranchNoDelay();
@@ -451,7 +451,7 @@ __inline int psxDelayBranchTest(u32 tar1) {
 	return psxDelayBranchExec(tmp2);
 }
 
-__inline void doBranch(u32 tar) {
+static __inline void doBranch(u32 tar) {
 	u32 *code;
 	u32 tmp;
 

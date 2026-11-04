@@ -154,6 +154,9 @@ GLint YTexS;
 GLint DXTexS;
 GLint DYTexS;
 int   iSortTexCnt=32;
+#ifdef __WARPOS__
+int   wos_sorttex_fixed;        /* SetEnv WSX_SORTTEX: no growing (wos_sorttex_grow) */
+#endif
 BOOL  bUseFastMdec=FALSE;
 BOOL  bUse15bitMdec=FALSE;
 int   iFrameTexType=0;
@@ -203,6 +206,25 @@ typedef char textureSubCacheEntryMustRemain16Bytes[
 #define MAXWNDTEXCACHE 64
 #define MAXTPAGES_MAX  64
 #define MAXSORTTEX_MAX 64
+#ifdef __WARPOS__
+/* GL_MGL_unsync_subimage (WarpOS/wos_gl.c): per page, MiniGL's sync point
+ * when space of it was last freed. A cache upload lands in free space, and
+ * no draw issued after the free samples it, so the upload need not wait for
+ * the GPU once that point has retired. 0: never freed. */
+extern unsigned int wosgl_sync_point(void);
+extern unsigned int wosgl_unsync_after;
+static unsigned int wos_page_freed_at[MAXSORTTEX_MAX];
+unsigned int wos_tex_compress, wos_tex_gc, wos_tex_clearall;  /* for the log */
+uint32_t wos_ts_ticks[4];
+unsigned int wos_ts_probe, wos_ts_hhit;   /* the search's hash: probes, hits */  /* SelectSubTextureS: clut key, cache search, load (incl. upload) */
+unsigned int wos_ts_calls;
+static void wos_tex_freed(int page)
+{
+ unsigned int p=wosgl_sync_point(),i;
+ if(page<0) for(i=0;i<MAXSORTTEX_MAX;i++) wos_page_freed_at[i]=p;
+ else if(page<MAXSORTTEX_MAX) wos_page_freed_at[page]=p;
+}
+#endif
 
 //---------------------------------------------
 
@@ -233,7 +255,12 @@ unsigned short MAXSORTTEX    = MAXSORTTEX_MAX;
  * The last palettes are kept with their fingerprint: when the VRAM still
  * holds the same colours (a compare, no multiplies) the fingerprint is the
  * same. Exact: a changed palette always hashes again. */
-#define CLUT_MEMO 8
+/* 128 sets of 2, by the palette id: Tekken 3 fights switch between more
+ * palettes than the 8 entries this was, each miss hashing (and copying)
+ * up to 256 colours again. */
+#define CLUT_SETS 128
+#define CLUT_WAYS 2
+#define CLUT_MEMO (CLUT_SETS*CLUT_WAYS)
 static struct {
  unsigned int id;           /* raw clut id | mode << 16 | 1 << 31: valid */
  uint64_t key;              /* ClutKeyBuild without the semi-transparent bit */
@@ -241,7 +268,12 @@ static struct {
  unsigned int pal[128];     /* the colours, as 32-bit words */
 } s_clutMemo[CLUT_MEMO];
 extern unsigned int wos_vram_gen;
-static unsigned int s_clutMemoNext;
+/* Per VRAM row, wos_vram_gen when it last changed: a CLUT lies in one row,
+ * so its colours stay known while that row is untouched -- the global
+ * generation moved on every VRAM write and made the CLUT memo compare the
+ * whole palette on almost every primitive. */
+extern unsigned int wos_vram_row_gen[512];
+static unsigned char s_clutMemoNext[CLUT_SETS];
 #endif
 
 static uint64_t BuildClutCacheKey(unsigned int rawClutId,int textureMode,
@@ -263,29 +295,30 @@ static uint64_t BuildClutCacheKey(unsigned int rawClutId,int textureMode,
    const unsigned short *pw=(const unsigned short *)palette;
    unsigned int words=textureMode==1 ? 128U : 8U, id=0x80000000U|(rawClutId&0xffffU)|((unsigned)textureMode<<16);
    unsigned int i,j;
-   for(i=0;i<CLUT_MEMO;i++)
+   unsigned int set=((id*0x9e3779b1u)>>24)&(CLUT_SETS-1), base=set*CLUT_WAYS;
+   for(i=base;i<base+CLUT_WAYS;i++)
     if(s_clutMemo[i].id==id)
      {
       const unsigned short *m=(const unsigned short *)s_clutMemo[i].pal;
       /* VRAM unchanged since the last check: the colours are too */
-      if(s_clutMemo[i].gen==wos_vram_gen)
+      if(s_clutMemo[i].gen==wos_vram_row_gen[((rawClutId>>6)&CLUTYMASK)&511])
        return s_clutMemo[i].key|(drawSemiTrans ? CLUT_KEY_SEMITRANS : 0);
       for(j=0;j<words*2 && m[j]==pw[j];j++)
        ;
       if(j==words*2)
        {
-        s_clutMemo[i].gen=wos_vram_gen;
+        s_clutMemo[i].gen=wos_vram_row_gen[((rawClutId>>6)&CLUTYMASK)&511];
         return s_clutMemo[i].key|(drawSemiTrans ? CLUT_KEY_SEMITRANS : 0);
        }
       break;
      }
-   if(i==CLUT_MEMO)
+   if(i==base+CLUT_WAYS)
     {
-     i=s_clutMemoNext;
-     s_clutMemoNext=(s_clutMemoNext+1)%CLUT_MEMO;
+     i=base+(s_clutMemoNext[set]&(CLUT_WAYS-1));
+     s_clutMemoNext[set]++;
     }
    s_clutMemo[i].id=id;
-   s_clutMemo[i].gen=wos_vram_gen;
+   s_clutMemo[i].gen=wos_vram_row_gen[((rawClutId>>6)&CLUTYMASK)&511];
    s_clutMemo[i].key=ClutKeyBuild(rawClutId,textureMode,0,palette);
    memcpy(s_clutMemo[i].pal,pw,words*4);
    return s_clutMemo[i].key|(drawSemiTrans ? CLUT_KEY_SEMITRANS : 0);
@@ -508,14 +541,18 @@ void CheckTextureMemory(void)
 #if 1
  iSortTexCnt=MAXSORTTEX;
 #ifdef __WARPOS__
- /* WarpOS: as many pages as the GL layer's atlas holds (WarpOS/wos_gl.c):
-  * a page beyond it is a texture of its own, and every switch to it a new
-  * MiniGL record. A full cache compacts itself (CompressTextureSpace).
-  * SetEnv WSX_SORTTEX n: n pages (1..MAXSORTTEX_MAX). */
+ /* WarpOS: the 16 cells of the GL layer's atlas (WarpOS/wos_gl.c). With 8
+  * a Tekken 3 fight cleared the whole cache about every 300 frames and then
+  * reloaded ~3 sub-textures a frame (45-50 fps); 8 more pages of their own
+  * cost a MiniGL record at every switch to and from the atlas. A full cache
+  * compacts itself (CompressTextureSpace); a game that needs still more
+  * pages grows it (wos_sorttex_grow). SetEnv WSX_SORTTEX n: n pages
+  * (1..MAXSORTTEX_MAX), fixed. */
  {
   extern int wos_env_int(const char *name, int def);
-  int n=wos_env_int("WSX_SORTTEX",8);
-  if(n>=1 && n<=MAXSORTTEX) iSortTexCnt=n;
+  int n=wos_env_int("WSX_SORTTEX",0);
+  if(n>=1 && n<=MAXSORTTEX) iSortTexCnt=n, wos_sorttex_fixed=1;
+  else iSortTexCnt=16;
  }
 #endif
 #else // below vram detector supposedly crashes some drivers
@@ -648,15 +685,30 @@ void CleanupTextureStore()
 
 #ifdef __WARPOS__
 unsigned int wos_vram_gen;      /* bumped on every VRAM change the cache hears of */
-#define WOS_VRAM_CHANGED() (wos_vram_gen++)
+unsigned int wos_vram_row_gen[512];
+static void wos_vram_rows(int y, int h)
+{
+ int y1=y+h, i;
+ unsigned int g=++wos_vram_gen;
+ if(y<0) y=0;
+ if(y1>512) y1=512;
+ if(h<0 || y1<=y) {for(i=0;i<512;i++) wos_vram_row_gen[i]=g; return;}
+ for(i=y;i<y1;i++) wos_vram_row_gen[i]=g;
+}
+#define WOS_VRAM_CHANGED() wos_vram_rows(0,-1)
+#define WOS_VRAM_ROWS(y,h) wos_vram_rows((y),(h))
 #else
 #define WOS_VRAM_CHANGED() ((void)0)
+#define WOS_VRAM_ROWS(y,h) ((void)0)
 #endif
 
 void ResetTextureArea(BOOL bDelTex)
 {
  int i,j;textureSubCacheEntryS * tss;EXLong * lu;
  WOS_VRAM_CHANGED();
+#ifdef __WARPOS__
+ wos_tex_freed(-1);
+#endif
  textureWndCacheEntry * tsx;
  //----------------------------------------------------//
 
@@ -705,7 +757,7 @@ void ResetTextureArea(BOOL bDelTex)
 void InvalidateWndTextureArea(int X,int Y,int W, int H)
 {
  int i,px1,px2,py1,py2,iYM=1;
- WOS_VRAM_CHANGED();
+ WOS_VRAM_ROWS(Y,H);
  textureWndCacheEntry * tsw=wcWndtexStore;
 
  W+=X-1;
@@ -769,6 +821,9 @@ void MarkFree(textureSubCacheEntryS * tsx)
 {
  EXLong * ul, * uls;
  int j,iMax;unsigned char x1,y1,dx,dy;
+#ifdef __WARPOS__
+ wos_tex_freed(tsx->cTexID);
+#endif
 
  uls=pxSsubtexLeft[tsx->cTexID];
  iMax=GETLE32((unsigned long *)(uls));ul=uls+1;
@@ -797,7 +852,7 @@ void MarkFree(textureSubCacheEntryS * tsx)
 void InvalidateSubSTextureArea(int X,int Y,int W, int H)
 {
  int i,j,k,iMax,px,py,px1,px2,py1,py2,iYM=1;
- WOS_VRAM_CHANGED();
+ WOS_VRAM_ROWS(Y,H);
  EXLong npos;textureSubCacheEntryS * tsb;
  int x1,x2,y1,y2,xa,sw;
 
@@ -886,7 +941,7 @@ void InvalidateSubSTextureArea(int X,int Y,int W, int H)
 
 void InvalidateTextureAreaEx(void)
 {
- WOS_VRAM_CHANGED();
+ WOS_VRAM_ROWS(symin, symax - symin + 1);
  short W=sxmax-sxmin;
  short H=symax-symin;
 
@@ -902,7 +957,7 @@ void InvalidateTextureAreaEx(void)
 
 void InvalidateTextureArea(int X,int Y,int W, int H)
 {
- WOS_VRAM_CHANGED();
+ WOS_VRAM_ROWS(Y,H);
  if(W==0 && H==0) return;
 
  if(iMaxTexWnds) InvalidateWndTextureArea(X,Y,W,H);
@@ -2876,9 +2931,21 @@ void DefineSubTextureSort(void)
   #endif // DISP_DEBUG
 
   int textureType;
+#ifdef __WARPOS__
+  {
+   int i;
+   wosgl_unsync_after=0;
+   for(i=0;i<iSortTexCnt;i++)
+    if(uiStexturePage[i]==gTexName)
+     {wosgl_unsync_after=wos_page_freed_at[i]?wos_page_freed_at[i]:1;break;}
+  }
+#endif
   textureType = glTexSubImage2D(GL_TEXTURE_2D, 0, XTexS, YTexS,
                  DXTexS, DYTexS,
                  GL_RGBA, GL_UNSIGNED_BYTE, texturepart); glError();
+#ifdef __WARPOS__
+  wosgl_unsync_after=0;
+#endif
     gl_ux[8] = (GLubyte)(textureType);
 }
 
@@ -2894,11 +2961,20 @@ void DefineSubTextureSort(void)
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+static void wos_sorttex_grow(void);
+#endif
+
 void DoTexGarbageCollection(void)
 {
  static unsigned short LRUCleaned=0;
  unsigned short iC,iC1,iC2;
  int i,j,iMax;textureSubCacheEntryS * tsb;
+
+#ifdef __WARPOS__
+ wos_sorttex_grow();
+ wos_tex_gc++;
+#endif
 
  iC=4;//=iSortTexCnt/2,
  LRUCleaned+=iC;                                       // we clean different textures each time
@@ -2909,6 +2985,9 @@ void DoTexGarbageCollection(void)
  for(iC=iC1;iC<iC2;iC++)                               // make some textures available
   {
    pxSsubtexLeft[iC]->l=0;
+#ifdef __WARPOS__
+   wos_tex_freed(iC);
+#endif
   }
 
  for(i=0;i<3;i++)                                      // remove all references to that textures
@@ -2963,20 +3042,31 @@ textureSubCacheEntryS *CheckTextureInSubSCache(
  iMax=GETLE32(SUBCACHE_COUNT_PTR(tsg));
 #ifdef __WARPOS__
  WOS_CRUMB2(80, iMax);
- /* The entries the last lookups found, tried before the scan (a page's
-  * bucket can hold hundreds; neighbouring primitives mostly reuse one).
-  * Each is checked as the scan would check it, and must still lie inside
-  * the bucket's count, so a freed or reused slot is never taken. */
+ /* The entries lookups of the same bucket, palette key and 16 x 16 texel
+  * cell (of the rectangle's top left) found, 8 a slot of a 1024-slot hash, tried before the scan (a page's bucket can hold
+  * hundreds; a Tekken 3 fight makes ~1000 lookups a frame over many
+  * textures, which a 4-entry ring of recent hits mostly missed: 0.9 ms a
+  * frame in the scan). Not the exact rectangle: each primitive's differs
+  * (39% hits); nor the palette alone: one page and palette hold many
+  * sub-textures, each an entry of its own (35%). Each entry is
+  * checked exactly as the scan would check it and must still lie inside
+  * the bucket's count, so a freed, moved or reused slot is never taken. */
  {
-  static textureSubCacheEntryS *s_hit[4];
-  static unsigned int s_hitNext;
-  unsigned int h;
-  for(h=0;h<4;h++)
+#define WOS_HH 1024
+#define WOS_HW 8
+  static textureSubCacheEntryS *s_hh[WOS_HH][WOS_HW];
+  static unsigned char s_hhNext[WOS_HH];
+  unsigned int w, h=(unsigned int)(uintptr_t)tsg*0x9e3779b1u ^ (unsigned int)clutKey*0x85ebca6bu ^
+                 (unsigned int)(clutKey>>32)*0xc2b2ae35u ^
+                 (unsigned int)((npos.c.x1>>4)|((npos.c.y1>>4)<<4))*0x27d4eb2fu;
+  h=(h>>16^h)&(WOS_HH-1);
+  wos_ts_probe++;
+  for(w=0;w<WOS_HW;w++)
    {
-    tsb=s_hit[h];
+    tsb=s_hh[h][w];
     if(tsb && tsb>tsg && tsb<=tsg+iMax &&
        clutKey==tsb->ClutKey && INCHECK(tsb->pos,npos))
-     goto WOS_HIT;
+     { wos_ts_hhit++; goto WOS_HIT; }
    }
   if(iMax)
    {
@@ -2986,8 +3076,8 @@ textureSubCacheEntryS *CheckTextureInSubSCache(
      {
       if(clutKey==tsb->ClutKey && (INCHECK(tsb->pos,npos)))
        {
-        s_hit[s_hitNext]=tsb;
-        s_hitNext=(s_hitNext+1)&3;
+        s_hh[h][s_hhNext[h]]=tsb;
+        s_hhNext[h]=(s_hhNext[h]+1)&(WOS_HW-1);
         goto WOS_HIT;
        }
       tsb++;
@@ -3222,6 +3312,10 @@ ENDLOOP:
 
     {
      dwTexPageComp=0;
+#ifdef __WARPOS__
+     wos_tex_freed(-1);
+     wos_tex_clearall++;
+#endif
 
      for(i=0;i<3;i++)                                    // cleaning up
       for(j=0;j<MAXTPAGES;j++)
@@ -3440,7 +3534,43 @@ TENDLOOP:
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+/* 8 pages keep a game inside the atlas, and the cache compacts itself when
+ * full, or clears 4 pages when none has room (DoTexGarbageCollection) --
+ * rarely, for Crash. Tekken 3's fights use more pages than 8: the cache
+ * cleared pages ~every frame and the texture lookup took 36-205 ms a
+ * frame (5-17 fps). More than 8 of either in 2 s give the cache all
+ * MAXSORTTEX pages for good (the pages beyond the atlas are textures of
+ * their own, as before the atlas). */
+static void wos_sorttex_grow(void)
+{
+ extern int framesdone;
+ static int win, n;
+ if(wos_sorttex_fixed || iSortTexCnt>=MAXSORTTEX) return;
+ if(framesdone-win>120) {win=framesdone; n=0;}
+ if(++n>8)
+  {
+   wos_log("[tex] %d pages are too few (%d clean-ups in 2 s): %d now",
+           iSortTexCnt,n,(int)MAXSORTTEX);
+   iSortTexCnt=MAXSORTTEX;
+  }
+}
+#endif
+
+#ifdef __WARPOS__
+uint32_t wos_tex_compress_tb;
+static void CompressTextureSpaceBody(void);
 void CompressTextureSpace(void)
+{
+ uint32_t t0=wos_tb_lo();
+ CompressTextureSpaceBody();
+ wos_tex_compress++;
+ wos_tex_compress_tb+=wos_tb_lo()-t0;
+}
+static void CompressTextureSpaceBody(void)
+#else
+void CompressTextureSpace(void)
+#endif
 {
  textureSubCacheEntryS * tsx, * tsg, * tsb;
  int i,j,k,m,n,iMax;EXLong * ul, r,opos;
@@ -3448,6 +3578,9 @@ void CompressTextureSpace(void)
  int  lOGTP=GlobalTexturePage;
 
  opos.l=*((unsigned int *)&gl_ux[4]);
+#ifdef __WARPOS__
+ wos_tex_freed(-1);
+#endif
 
  // 1. mark all textures as free
  for(i=0;i<iSortTexCnt;i++)
@@ -3614,11 +3747,41 @@ GLuint SelectSubTextureS(int TextureMode, unsigned int GivenClutId)
    cx=((GivenClutId << 4) & 0x3F0);                    // but here
    cy=((GivenClutId >> 6) & CLUTYMASK);
   }
+ {
+#ifdef __WARPOS__
+ uint32_t _w0=wos_tb_lo(),_w1;
+ wos_ts_calls++;
+#endif
+#ifdef __WARPOS__
+ {
+  /* the previous lookup's key while no VRAM changed since (wos_vram_gen):
+   * consecutive primitives mostly share page, palette and mode */
+  extern unsigned int wos_vram_gen;
+  static unsigned int s_kId=0xffffffffu, s_kGen;
+  static uint64_t s_kKey;
+  unsigned int id=(GivenClutId&0xffffu)|((unsigned)TextureMode<<16)|(DrawSemiTrans?0x40000u:0);
+  if(id==s_kId && s_kGen==wos_vram_gen)
+   clutKey=s_kKey;
+  else
+   {
+    clutKey=BuildClutCacheKey(GivenClutId,TextureMode,DrawSemiTrans);
+    s_kId=id; s_kGen=wos_vram_gen; s_kKey=clutKey;
+   }
+ }
+#else
  clutKey=BuildClutCacheKey(GivenClutId,TextureMode,DrawSemiTrans);
+#endif
+#ifdef __WARPOS__
+ _w1=wos_tb_lo(); wos_ts_ticks[0]+=_w1-_w0;
+#endif
 
  // search cache
  iCache=0;
  newEntry=CheckTextureInSubSCache(TextureMode,clutKey,&iCache);
+#ifdef __WARPOS__
+ wos_ts_ticks[1]+=wos_tb_lo()-_w1;
+#endif
+ }
 #ifdef __WARPOS__
  WOS_CRUMB2(81, iCache);
 #endif
@@ -3632,6 +3795,7 @@ GLuint SelectSubTextureS(int TextureMode, unsigned int GivenClutId)
    CompressTextureSpace();
 #ifdef __WARPOS__
    WOS_CRUMB(83);
+   wos_sorttex_grow();
 #endif
    newEntry=CheckTextureInSubSCache(TextureMode,clutKey,&iCache);
   }
@@ -3659,10 +3823,16 @@ GLuint SelectSubTextureS(int TextureMode, unsigned int GivenClutId)
 // DEBUG_print(txtbuffer,  DBG_CDR3);
  //writeLogFile(txtbuffer);
  #endif // DISP_DEBUG
+ {
+#ifdef __WARPOS__
+ uint32_t _w0=wos_tb_lo();
+#endif
  LoadSubTexFn(GlobalTexturePage,TextureMode,cx,cy);
 #ifdef __WARPOS__
+ wos_ts_ticks[2]+=wos_tb_lo()-_w0;
  WOS_CRUMB(89);
 #endif
+ }
  uiStexturePage[iCache]=gTexName;
  newEntry->drawInfo=PackDrawInfo(ubOpaqueDraw,gl_ux[8]);
  #ifdef DISP_DEBUG
@@ -3672,6 +3842,167 @@ GLuint SelectSubTextureS(int TextureMode, unsigned int GivenClutId)
  #endif // DISP_DEBUG
  return (GLuint) gTexName;
 }
+
+
+#ifdef __WARPOS__
+/* ---- Palette textures on the GPU (WarpOS/wos_gl.c, wosgl_gp_*) ----------
+ * A 4- or 8-bit texture page lives in one of 16 cells as its palette
+ * indices, refreshed by the VRAM rows that changed since (wos_vram_row_gen);
+ * its palette lives in one of 128 palette rows, kept while the palette's
+ * VRAM row and colours stay. No sub-texture cache, no conversion through
+ * the palette, no upload per palette. SetEnv WSX_GPUPAL 0: off. */
+extern int    wosgl_gp_on(void);
+extern GLuint wosgl_gp_name(int c);
+extern void   wosgl_gp_index(int c, int y, int n, const unsigned char *bgra);
+extern void   wosgl_gp_palette(int k, const unsigned short *pal, int n, int semi);
+extern void   wosgl_gp_slot(int k);
+extern int    wosgl_gp_nslots(void);
+
+#define GP_CELLS 16
+#define GP_SLOTS 256
+static struct {
+ int key;                       /* page | mode << 6, -1 free */
+ unsigned gen;                  /* wos_vram_gen when last brought up to date */
+ unsigned lru;
+ unsigned rowgen[256];          /* wos_vram_row_gen of each of its rows */
+} s_gpc[GP_CELLS];
+static struct {
+ unsigned key;                  /* clut | mode << 16 | semi << 17 | 1 << 31 */
+ unsigned gen;                  /* wos_vram_row_gen of its VRAM row when checked */
+ unsigned lru;
+ unsigned short pal[256];
+} s_gps[GP_SLOTS];
+static short s_gpsHint[1024];   /* key hash -> slot + 1 */
+static unsigned s_gpTick;
+static unsigned char s_gpBuf[256*256*4];
+unsigned int wos_gp_prims, wos_gp_rows, wos_gp_pals, wos_gp_fall;   /* for the log */
+int wos_gp_last_slot;
+
+static void wos_gp_cell_update(int c, int page, int mode)
+{
+ int y, y0=-1, x;
+ int pageY=(page>>4)<<8, pageX=(page&15)<<7;   /* bytes */
+ for(y=0;y<=256;y++)
+  {
+   int stale=0;
+   if(y<256)
+    {
+     unsigned g=wos_vram_row_gen[(pageY+y)&511];
+     if(s_gpc[c].rowgen[y]!=g)
+      {
+       const unsigned char *src=psxVub+pageX+((size_t)((pageY+y)&511)<<11);
+       unsigned char *d=s_gpBuf+(size_t)y*256*4;
+       s_gpc[c].rowgen[y]=g;
+       stale=1;
+       if(mode==0)
+        for(x=0;x<128;x++,d+=8)
+         {
+          unsigned b=src[x];
+          d[0]=0; d[1]=0; d[2]=(unsigned char)(b&15); d[3]=255;
+          d[4]=0; d[5]=0; d[6]=(unsigned char)(b>>4); d[7]=255;
+         }
+       else
+        for(x=0;x<256;x++,d+=4)
+         { d[0]=0; d[1]=0; d[2]=src[x]; d[3]=255; }
+       wos_gp_rows++;
+      }
+    }
+   if(stale && y0<0) y0=y;
+   if(!stale && y0>=0)
+    {
+     wosgl_gp_index(c,y0,y-y0,s_gpBuf+(size_t)y0*256*4);
+     y0=-1;
+    }
+  }
+ s_gpc[c].gen=wos_vram_gen;
+}
+
+/* the wos_gl texture for this primitive (0: the texture cache instead) */
+GLuint wos_gp_select(int page, int mode, unsigned clut, int semi)
+{
+ static int init;
+ int c, k, best, n, cx, cy, i;
+ unsigned key, h;
+ if(!init)
+  {
+   init=1;
+   for(c=0;c<GP_CELLS;c++) s_gpc[c].key=-1;
+  }
+ {
+  /* SetEnv WSX_GPMASK: which kinds take it (tests): 1 4-bit, 2 8-bit,
+   * 4 opaque, 8 semi-transparent; default all */
+  static int mask=-1;
+  if(mask<0) { extern int wos_env_int(const char *name, int def); mask=wos_env_int("WSX_GPMASK",15); }
+  if(!(mask&(mode?2:1)) || !(mask&(semi?8:4)))
+   { wos_gp_fall++; return 0; }
+ }
+ if(!wosgl_gp_on() || mode>1 || (mode==1 && (page&15)==15))
+  { wos_gp_fall++; return 0; }
+ s_gpTick++;
+ /* the index cell */
+ key=(unsigned)(page|(mode<<6));
+ for(c=0;c<GP_CELLS && s_gpc[c].key!=(int)key;c++)
+  ;
+ if(c==GP_CELLS)
+  {
+   for(c=0,best=0;c<GP_CELLS;c++)
+    if(s_gpc[c].key<0 || s_gpc[c].lru<s_gpc[best].lru) { best=c; if(s_gpc[c].key<0) break; }
+   c=best;
+   s_gpc[c].key=(int)key;
+   s_gpc[c].gen=~0u;
+   memset(s_gpc[c].rowgen,0xff,sizeof(s_gpc[c].rowgen));
+  }
+ if(s_gpc[c].gen!=wos_vram_gen)
+  wos_gp_cell_update(c,page,mode);
+ s_gpc[c].lru=s_gpTick;
+ /* the palette row */
+ n=mode ? 256 : 16;
+ cx=(clut<<4)&0x3f0;
+ cy=(clut>>6)&CLUTYMASK;
+ key=(clut&0xffffu)|((unsigned)mode<<16)|(semi?0x20000u:0)|0x80000000u;
+ h=((key*0x9e3779b1u)>>22)&1023;
+ k=s_gpsHint[h]-1;
+ if(k<0 || s_gps[k].key!=key)
+  for(k=0;k<GP_SLOTS && s_gps[k].key!=key;k++)
+   ;
+ if(k<GP_SLOTS)
+  {
+   unsigned g=wos_vram_row_gen[cy&511];
+   if(s_gps[k].gen!=g)
+    {
+     const unsigned short *pw=psxVuw+cx+(cy<<10);
+     for(i=0;i<n && s_gps[k].pal[i]==GETLE16(pw+i);i++)
+      ;
+     s_gps[k].gen=g;
+     if(i<n)
+      {
+       for(i=0;i<n;i++) s_gps[k].pal[i]=GETLE16(pw+i);
+       wosgl_gp_palette(k,s_gps[k].pal,n,semi);
+       wos_gp_pals++;
+      }
+    }
+  }
+ else
+  {
+   const unsigned short *pw=psxVuw+cx+(cy<<10);
+   int ns=wosgl_gp_nslots();
+   for(k=0,best=0;k<ns;k++)
+    if(!s_gps[k].key || s_gps[k].lru<s_gps[best].lru) { best=k; if(!s_gps[k].key) break; }
+   k=best;
+   s_gps[k].key=key;
+   s_gps[k].gen=wos_vram_row_gen[cy&511];
+   for(i=0;i<n;i++) s_gps[k].pal[i]=GETLE16(pw+i);
+   wosgl_gp_palette(k,s_gps[k].pal,n,semi);
+   wos_gp_pals++;
+  }
+ s_gpsHint[h]=(short)(k+1);
+ s_gps[k].lru=s_gpTick;
+ wosgl_gp_slot(k);
+ wos_gp_last_slot=k;
+ wos_gp_prims++;
+ return wosgl_gp_name(c);
+}
+#endif
 
 #endif // _IN_GPU_LIB
 

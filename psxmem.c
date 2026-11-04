@@ -255,7 +255,7 @@ void psxMemOnIsolate(int enable)
 #if defined(__WARPOS__) && defined(WOS_PROFCPU)
 #include "WarpOS/wos_sys.h"
 extern unsigned int wos_hw_ops;
-#define WOS_HWR(e) do { uint32_t _t0 = wos_tb_lo(); u32 _v = (e); wos_prof_ticks[WOS_PROF_HW] += wos_tb_lo() - _t0; wos_hw_ops++; return _v; } while (0)
+#define WOS_HWR(e) do { uint32_t _t0 = wos_tb_lo(); WOS_PMC_T0; u32 _v = (e); wos_prof_ticks[WOS_PROF_HW] += wos_tb_lo() - _t0; WOS_PMC_ADD(WOS_PROF_HW); wos_hw_ops++; return _v; } while (0)
 #else
 #define WOS_HWR(e) return (e)
 #endif
@@ -437,6 +437,9 @@ void psxMemWrite32(u32 mem, u32 value) {
 						memset(psxMemWLUT + 0xa000, 0, 0x80 * sizeof(void *));
 
 						psxRegs.ICache_valid = FALSE;
+#ifdef __WARPOS__
+						WOS_EVENT_NOW();        /* blocks link past the dispatcher's check */
+#endif
 						break;
 					case 0x00: case 0x1e988:
 						if (writeok == 1) break;

@@ -182,8 +182,24 @@ static void wos_plan_next_event(void)
 	s32 best = (s32)(psxNextsCounter + psxNextCounter - c);
 	int why = 0;
 
-	if (psxHu32(0x1070) & psxHu32(0x1074))
-		best = 0, why = 1;
+	/* A raised irq matters once the CPU can take it. While SR masks it (an
+	 * interrupt handler runs with IEc clear) every block end ran the whole
+	 * branch test: ~2900 a frame in a Tekken 3 fight. SR writes and RFE
+	 * reopen the gate (psxTestSWInts), as an I_STAT/I_MASK write does. Not
+	 * with the CD's irq among them: the rule then broke the Crash/Spyro
+	 * loader's CD interrupts (5f51aab), so that one keeps the old gate.
+	 * SetEnv WSX_MASKGATE 0: always the old gate. */
+	{
+		static int maskgate = -1;
+		u32 pend = psxHu32(0x1070) & psxHu32(0x1074);
+		if (maskgate < 0) {
+			extern int wos_env_int(const char *name, int def);
+			maskgate = wos_env_int("WSX_MASKGATE", 1);
+		}
+		if (pend && (!maskgate || (pend & 0x4) ||
+		             (psxRegs.CP0.n.SR & 0x401) == 0x401))
+			best = 0, why = 1;
+	}
 	for (i = 0; bits && best > 0; i++, bits >>= 1) {
 		if (bits & 1) {
 			s32 d = (s32)(psxRegs.intCycle[i].sCycle + psxRegs.intCycle[i].cycle - c);
@@ -198,7 +214,21 @@ static void wos_plan_next_event(void)
 }
 #endif
 
+#ifdef __WARPOS__
+/* SetEnv WSX_PMC 1: the whole branch test counted as its own stage */
+static void psxBranchTestBody(void);
 void psxBranchTest() {
+	if (wos_pmc_on) {
+		WOS_PMC_T0;
+		psxBranchTestBody();
+		WOS_PMC_ADD(WOS_PROF_BT);
+	} else
+		psxBranchTestBody();
+}
+static void psxBranchTestBody(void) {
+#else
+void psxBranchTest() {
+#endif
 #ifdef __WARPOS__
 	{
 		static u32 wos_prev_pc;
@@ -262,6 +292,7 @@ wos_full:
 
 #ifdef __WARPOS__
 	uint32_t wos_t0 = wos_tb_lo(), wos_t1;
+	WOS_PMC_T0;
 #endif
 	if ((psxRegs.cycle - psxNextsCounter) >= psxNextCounter)
 		psxRcntUpdate();
@@ -269,6 +300,9 @@ wos_full:
 	WOS_CRUMB2(62, psxRegs.interrupt);
 	wos_t1 = wos_tb_lo();
 	wos_prof_ticks[WOS_PROF_RCNT] += wos_t1 - wos_t0;
+	WOS_PMC_ADD(WOS_PROF_RCNT);
+	if (wos_pmc_on)
+		wos_pmc_read(_pmc0);
 #endif
 
 	/* Signed: an event whose start lies a little ahead of the clock (the CD
@@ -358,6 +392,7 @@ wos_full:
 #ifdef __WARPOS__
 	WOS_CRUMB(68);
 	wos_prof_ticks[WOS_PROF_IRQ] += wos_tb_lo() - wos_t1;
+	WOS_PMC_ADD(WOS_PROF_IRQ);
 #endif
 	psxRegs.CP0.n.Cause &= ~0x400;
 	if (psxHu32(0x1070) & psxHu32(0x1074))

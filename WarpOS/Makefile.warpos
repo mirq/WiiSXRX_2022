@@ -13,10 +13,12 @@ MGL_DIR ?= /home/mirek/MiniGL_WOS_V19_mglQ3
 # The oldest WarpOS boards (Blizzard/CyberStorm PPC) are 603e/604e: code for a
 # 603e runs on every one of them.
 CPU     ?= 603e
+# Scheduled for the 7410 the target has; still 603e instructions only.
+TUNE    ?= -mtune=7400
 include $(MGL_DIR)/Makefile.wos.gcc.common
 
 SHELL  := /bin/bash
-OUT    := build/warpos
+OUT    ?= build/warpos
 OBJDIR := $(OUT)/obj
 ELF    := $(OUT)/WiiStation.warpelf
 DEBUG_ELF := $(OUT)/WiiStation.debug.elf
@@ -27,7 +29,9 @@ BUILD_STAMP := $(shell git describe --always --dirty 2>/dev/null || echo unknown
 
 # ---- Sources -----------------------------------------------------------
 
-PLATFORM_SRCS := $(wildcard WarpOS/*.c)
+PLATFORM_SRCS := $(filter-out WarpOS/av_%.c,$(wildcard WarpOS/*.c))
+# AltiVec code (WarpOS/wos_av.h): G4 instructions, run only on a G4.
+AV_SRCS := $(wildcard WarpOS/av_*.c)
 
 # The emulator core: every C file at the top level but the Wii-only ones.
 # Fail loudly when a listed name stops existing, so a rename cannot slip a
@@ -64,7 +68,7 @@ CHDR_SRCS := $(wildcard $(CHDR)/src/*.c) \
 # The ppc/ dynarec (the "old" one: lookup tables, no MMU tricks; Lightrec,
 # which needs the Wii's page tables, is not built).
 REC_SRCS := ppc/pR3000A.c ppc/ppc.c ppc/reguse.c
-REC_ASM  := ppc/pasm.s
+REC_ASM  := ppc/pasm.s WarpOS/wos_av_call.s
 
 # GlesGpu, the hardware renderer: one translation unit (gpuPlugin.c includes
 # gpuDraw.c, gpuTexture.c, gpuVramReadback.inc and gpuPrim.c), over
@@ -96,7 +100,8 @@ ifeq ($(WOS_CRUMBS),1)
 DEFINES += -DWOS_CRUMBS
 endif
 
-CFLAGS_COMMON := $(WOS_ARCH_CFLAGS) -O2 -g -fno-strict-aliasing -funsigned-char \
+OPT     ?= -O2
+CFLAGS_COMMON := $(WOS_ARCH_CFLAGS) $(TUNE) $(OPT) -g -fno-strict-aliasing -funsigned-char \
           -fno-common -msdata=none -G0 -MMD -MP \
           $(DEFINES) $(WOS_CPPFLAGS_NOSDL) -Uamiga -Uamigaos \
           -IWarpOS -I. -IWarpOS/compat -I$(MGL_DIR)/include \
@@ -110,7 +115,8 @@ CFLAGS := -std=gnu99 $(CFLAGS_COMMON) -w
 BUILD_FLAGS_STAMP := $(OBJDIR)/.build-flags
 $(shell mkdir -p $(OBJDIR); f='$(CFLAGS)'; [ "$$(cat $(BUILD_FLAGS_STAMP) 2>/dev/null)" = "$$f" ] || printf '%s' "$$f" > $(BUILD_FLAGS_STAMP))
 
-OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(SRCS)) $(patsubst %.s,$(OBJDIR)/%.o,$(REC_ASM))
+AV_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(AV_SRCS))
+OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(SRCS)) $(patsubst %.s,$(OBJDIR)/%.o,$(REC_ASM)) $(AV_OBJS)
 DEPS := $(OBJS:.o=.d)
 
 .PHONY: all clean
@@ -121,6 +127,13 @@ $(OBJDIR)/%.o: %.c $(BUILD_FLAGS_STAMP)
 	@mkdir -p $(dir $@)
 	@echo "  CC  $<"
 	@$(CC) $(CFLAGS) -c $< -o $@
+
+# the vector files: after the generic rule, so this one wins for them
+AV_CFLAGS = $(subst -mcpu=$(CPU),-mcpu=7400,$(CFLAGS)) -maltivec -mabi=altivec
+$(AV_OBJS): $(OBJDIR)/%.o: %.c $(BUILD_FLAGS_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  CC  $< (AltiVec)"
+	@$(CC) $(AV_CFLAGS) -c $< -o $@
 
 $(OBJDIR)/%.o: %.s $(BUILD_FLAGS_STAMP)
 	@mkdir -p $(dir $@)
