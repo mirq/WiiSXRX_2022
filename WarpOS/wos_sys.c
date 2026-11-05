@@ -704,6 +704,12 @@ void wos_pcprof_poll(unsigned presents)
     }
     if (at < 0)
         return;
+    {   /* F9 (wos_input.c): start sampling now */
+        extern int wos_pcprof_key;
+        if (wos_pcprof_key && s_pcs_state == 0)
+            at = (int)presents;
+        wos_pcprof_key = 0;
+    }
     if (s_pcs_state == 0 && presents >= (unsigned)at) {
         struct TagItem tags[] = {
             { EXCATTR_CODE, (ULONG)wos_pcs_handler },

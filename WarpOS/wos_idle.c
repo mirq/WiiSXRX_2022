@@ -201,6 +201,14 @@ static void analyse(void)
     }
     if (p > MAXP)
         return;
+    /* Not the kernel's own loops (its RAM, the first 64 KB of each mirror):
+     * the BIOS's memory-card driver waits for the card's acknowledge there
+     * (0xa000df98), and skipping its rounds made every card exchange time
+     * out -- "no memory card" in R-Type Delta, Ace Combat 3 stuck at its
+     * first "Now Loading" and at the mission hub. */
+    for (i = 0; i < p; i++)
+        if ((s_trace[i] & 0x1fffffff) < 0x10000)
+            return;
     if (p == 1) {
         u32 b, op;
         WosIdle *w;

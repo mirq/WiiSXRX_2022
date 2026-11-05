@@ -1111,8 +1111,33 @@ static struct {
 static int cdread_normal(FILE *f, unsigned int base, void *dest, int sector)
 {
 	int n;
-	if (f == cdHandle && wos_cda_ok() && base % CD_FRAMESIZE_RAW == 0)
-		return wos_cda_read((int)(base / CD_FRAMESIZE_RAW) + sector, dest);
+	/* SetEnv WSX_CDASYNC 0: the stdio path only. WSX_CDVERIFY 1: each
+	 * asynchronous sector read again through stdio and compared ([cdv]). */
+	static int async = -1, verify;
+	if (async < 0) {
+		extern int wos_env_int(const char *name, int def);
+		async = wos_env_int("WSX_CDASYNC", 1);
+		verify = wos_env_int("WSX_CDVERIFY", 0);
+	}
+	if (async && f == cdHandle && wos_cda_ok() && base % CD_FRAMESIZE_RAW == 0) {
+		int r = wos_cda_read((int)(base / CD_FRAMESIZE_RAW) + sector, dest);
+		if (verify && r == CD_FRAMESIZE_RAW) {
+			static unsigned char chk[CD_FRAMESIZE_RAW];
+			static int nbad, nchk;
+			nchk++;
+			if (fseek(f, base + sector * CD_FRAMESIZE_RAW, SEEK_SET) == 0 &&
+			    fread(chk, 1, CD_FRAMESIZE_RAW, f) == CD_FRAMESIZE_RAW &&
+			    memcmp(chk, dest, CD_FRAMESIZE_RAW) && nbad < 100) {
+				int i = 0;
+				extern void wos_log(const char *fmt, ...);
+				while (i < CD_FRAMESIZE_RAW && chk[i] == ((unsigned char *)dest)[i]) i++;
+				nbad++;
+				wos_log("[cdv] sector %d differs from byte %d (%d checked, %d bad)",
+					(int)(base / CD_FRAMESIZE_RAW) + sector, i, nchk, nbad);
+			}
+		}
+		return r;
+	}
 	if (wos_cd.f != f || wos_cd.base != base ||
 	    sector < wos_cd.first || sector >= wos_cd.first + wos_cd.count) {
 		wos_cd.f = f;

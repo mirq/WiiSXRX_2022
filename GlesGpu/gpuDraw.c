@@ -1298,6 +1298,19 @@ void assignTexture4(void)
 //                     the ogl clipping (scissor)
 
 BOOL bSetClip=FALSE;
+#ifdef __WARPOS__
+/* GlesGpu's own copies of VRAM to the screen (UploadScreen) are not the
+ * game's primitives: the whole display, not the drawing area. The next
+ * primitive sets the area again. */
+int wos_clip_forced;
+void wos_scissor_full(void)
+{
+ glScissor(rRatioRect.left, iResY - (rRatioRect.top + rRatioRect.bottom),
+           rRatioRect.right, rRatioRect.bottom); glError();
+ wos_clip_forced = 1;
+ bDisplayNotSet = TRUE;
+}
+#endif
 
 void SetOGLDisplaySettings(BOOL DisplaySet)
 {
@@ -1373,6 +1386,7 @@ void SetOGLDisplaySettings(BOOL DisplaySet)
  PSXDisplay.CumulOffset.y = PSXDisplay.DrawOffset.y - PSXDisplay.GDrawOffset.y+PreviousPSXDisplay.Range.y0;
 
  #ifdef __WARPOS__
+ extern int wos_clip_forced;
  /* The drawing area as the scissor, in the coordinates the vertices get
   * (vram - GDrawOffset + Range, scaled to the window): Tekken 3's menu
   * draws all its entries and lets the area show three. An area off the
@@ -1380,7 +1394,12 @@ void SetOGLDisplaySettings(BOOL DisplaySet)
  {
   static int clip = -1;
   if (clip < 0) { extern int wos_env_int(const char *, int); clip = wos_env_int("WSX_DRAWCLIP", 1); }
-  if (clip && PSXDisplay.DisplayMode.x > 0 && PSXDisplay.DisplayMode.y > 0)
+  /* only an area smaller than the display clips: a whole buffer's area
+   * (double buffering, interlaced fields) maps through offsets that do not
+   * always match, and a wrong clip there froze Ace Combat 3's screens */
+  if (clip && PSXDisplay.DisplayMode.x > 0 && PSXDisplay.DisplayMode.y > 0 &&
+      (PSXDisplay.DrawArea.x1 - PSXDisplay.DrawArea.x0 + 1 < PSXDisplay.DisplayMode.x ||
+       PSXDisplay.DrawArea.y1 - PSXDisplay.DrawArea.y0 + 1 < PSXDisplay.DisplayMode.y))
    {
     RECT a; int dx = PreviousPSXDisplay.Range.x0 - PSXDisplay.GDrawOffset.x;
     int dy = PreviousPSXDisplay.Range.y0 - PSXDisplay.GDrawOffset.y;
@@ -1407,8 +1426,43 @@ void SetOGLDisplaySettings(BOOL DisplaySet)
       a.top = iResY - (rRatioRect.top + a.top + h);
       a.bottom = h;
      }
-    if (!EqualRect(&a, &rC))
+    if (!EqualRect(&a, &rC) || wos_clip_forced)
      {
+      static int logged;
+      static short seen[32][4];
+      int k, isnew = 1;
+      for (k = 0; k < logged; k++)
+        if (seen[k][0] == PSXDisplay.DrawArea.x0 && seen[k][1] == PSXDisplay.DrawArea.y0 &&
+            seen[k][2] == PSXDisplay.DrawArea.x1 && seen[k][3] == PSXDisplay.DrawArea.y1)
+          isnew = 0;
+      if (isnew && logged < 32)
+       {
+        extern void wos_log(const char *fmt, ...);
+        seen[logged][0] = PSXDisplay.DrawArea.x0; seen[logged][1] = PSXDisplay.DrawArea.y0;
+        seen[logged][2] = PSXDisplay.DrawArea.x1; seen[logged][3] = PSXDisplay.DrawArea.y1;
+        logged++;
+        wos_log("[clip] area %d,%d-%d,%d goff %d,%d range %d,%d mode %dx%d disp %d,%d prev %d,%d -> %d,%d %dx%d (ratio %d,%d %dx%d)",
+                PSXDisplay.DrawArea.x0, PSXDisplay.DrawArea.y0, PSXDisplay.DrawArea.x1, PSXDisplay.DrawArea.y1,
+                PSXDisplay.GDrawOffset.x, PSXDisplay.GDrawOffset.y,
+                PreviousPSXDisplay.Range.x0, PreviousPSXDisplay.Range.y0,
+                PSXDisplay.DisplayMode.x, PSXDisplay.DisplayMode.y,
+                PSXDisplay.DisplayPosition.x, PSXDisplay.DisplayPosition.y,
+                PreviousPSXDisplay.DisplayPosition.x, PreviousPSXDisplay.DisplayPosition.y,
+                (int)a.left, (int)a.top, (int)a.right, (int)a.bottom,
+                (int)rRatioRect.left, (int)rRatioRect.top, (int)rRatioRect.right, (int)rRatioRect.bottom);
+       }
+      wos_clip_forced = 0;
+      rC = a;
+      glScissor(rC.left, rC.top, rC.right, rC.bottom); glError();
+     }
+   }
+  else if (clip)
+   {                                     /* the whole display */
+    RECT a = rRatioRect;
+    a.top = iResY - (rRatioRect.top + rRatioRect.bottom);
+    if (!EqualRect(&a, &rC) || wos_clip_forced)
+     {
+      wos_clip_forced = 0;
       rC = a;
       glScissor(rC.left, rC.top, rC.right, rC.bottom); glError();
      }

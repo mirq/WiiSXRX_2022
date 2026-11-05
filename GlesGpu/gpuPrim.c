@@ -1059,10 +1059,12 @@ static void wos_prim_probe(unsigned int attr)
     }
     if (framesdone != f && framesdone != wos_probe_frame)
         return;
-    wos_log("[prim] a %08x xy %d,%d %d,%d %d,%d %d,%d tex %d semi %d abr %d tp %d page %d clut %04x uv %d,%d %d,%d %d,%d tw %d mask %d",
+    wos_log("[prim] a %08x xy %d,%d %d,%d %d,%d %d,%d tex %d semi %d abr %d tp %d page %d clut %04x uv %d,%d %d,%d %d,%d tw %d mask %d area %d,%d-%d,%d off %d,%d",
             attr, lx0, ly0, lx1, ly1, lx2, ly2, lx3, ly3, (int)bDrawTextured, (int)DrawSemiTrans,
             (int)GlobalTextABR, (int)GlobalTextTP, (int)GlobalTexturePage, (unsigned)ulClutID,
-            gl_ux[0], gl_vy[0], gl_ux[1], gl_vy[1], gl_ux[2], gl_vy[2], (int)bUsingTWin, (int)sSetMask);
+            gl_ux[0], gl_vy[0], gl_ux[1], gl_vy[1], gl_ux[2], gl_vy[2], (int)bUsingTWin, (int)sSetMask,
+            PSXDisplay.DrawArea.x0, PSXDisplay.DrawArea.y0, PSXDisplay.DrawArea.x1, PSXDisplay.DrawArea.y1,
+            PSXDisplay.DrawOffset.x, PSXDisplay.DrawOffset.y);
 }
 #endif
 static void SetRenderMode ( unsigned int DrawAttributes, BOOL bSCol )
@@ -1757,6 +1759,8 @@ static int UploadScreen_ ( int Position );
 int UploadScreen ( int Position )
 {
     int r;
+    extern void wos_scissor_full(void);
+    wos_scissor_full();
     WOS_PROF(WOS_PROF_UPSCREEN, r = UploadScreen_(Position));
     return r;
 }
@@ -2406,9 +2410,28 @@ static void ClampToPSXScreenOffset ( short *x0, short *y0, short *x1, short *y1 
 // cmd: start of drawing area... primitives will be clipped inside
 ////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+static void wos_env_probe(const char *k, uint32_t g)
+{
+    extern int framesdone;
+    extern void wos_log(const char *fmt, ...);
+    static int f = -2;
+    if (f == -2) {
+        extern const char *wos_getenv(const char *name);
+        const char *e = wos_getenv("WSX_PRIMPROBE");
+        f = e ? atoi(e) : -1;
+    }
+    if (framesdone == f || framesdone == wos_probe_frame)
+        wos_log("[prim] %s %08x", k, (unsigned)g);
+}
+#define WOS_ENV_PROBE(k, g) wos_env_probe(k, g)
+#else
+#define WOS_ENV_PROBE(k, g)
+#endif
 static void cmdDrawAreaStart ( unsigned char * baseAddr )
 {
     uint32_t gdata = GETLE32 ( ( uint32_t* ) baseAddr );
+    WOS_ENV_PROBE("E3", gdata);
 #ifdef __WARPOS__
     bDisplayNotSet = TRUE;                                /* the scissor follows the area */
 #endif
@@ -2448,6 +2471,7 @@ static void cmdDrawAreaStart ( unsigned char * baseAddr )
 static void cmdDrawAreaEnd ( unsigned char * baseAddr )
 {
     uint32_t gdata = GETLE32 ( ( uint32_t* ) baseAddr );
+    WOS_ENV_PROBE("E4", gdata);
 #ifdef __WARPOS__
     bDisplayNotSet = TRUE;                                /* the scissor follows the area */
 #endif
@@ -2507,6 +2531,7 @@ static void cmdDrawAreaEnd ( unsigned char * baseAddr )
 static void cmdDrawOffset ( unsigned char * baseAddr )
 {
     uint32_t gdata = GETLE32 ( ( uint32_t* ) baseAddr );
+    WOS_ENV_PROBE("E5", gdata);
 
     PreviousPSXDisplay.DrawOffset.x =
         PSXDisplay.DrawOffset.x = ( short ) ( gdata & 0x7ff );
@@ -2558,6 +2583,75 @@ static void cmdDrawOffset ( unsigned char * baseAddr )
 // cmd: load image to vram
 ////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+/* SetEnv WSX_IMGLOG n: the first n VRAM uploads/copies logged ([img]);
+ * any that touch the HUD CLUT rows (x 688-767, y 144-160) always (cap 300) */
+static char wos_img_last[96];
+void wos_img_watch(const char *where)
+{   /* the 720,144 16x26 CLUT block: log when its contents change */
+    static unsigned last = 0;
+    extern int framesdone;
+    extern void wos_log(const char *fmt, ...);
+    unsigned sum = 0;
+    int x, y;
+    static int logs = 0;
+    for (y = 145; y < 170; y++)     /* not 144: the game blinks it by copies */
+        for (x = 720; x < 736; x++)
+            sum = sum * 31 + psxVuw[(y << 10) + x];
+    if (sum != last && logs++ < 400) {
+        unsigned short *q = psxVuw + (150 << 10) + 720;
+        wos_log("[img] watch: block changed (%s) frame %d, last cmd %s; row 150: %04x %04x %04x %04x %04x %04x %04x %04x",
+                where, framesdone, wos_img_last, GETLE16(q), GETLE16(q+1), GETLE16(q+2), GETLE16(q+3),
+                GETLE16(q+4), GETLE16(q+5), GETLE16(q+6), GETLE16(q+7));
+        last = sum;
+    }
+}
+static void wos_img_log(const char *k, int x, int y, int w, int h, int x1, int y1)
+{
+    wos_img_watch(k);
+    snprintf(wos_img_last, sizeof wos_img_last, "%s %d,%d %dx%d -> %d,%d", k, x, y, w, h, x1, y1);
+    {
+    static int cap = -2, hits = 0, n = 0;
+    extern int framesdone;
+    extern void wos_log(const char *fmt, ...);
+    int hit;
+    if (cap == -2) {
+        extern const char *wos_getenv(const char *name);
+        const char *e = wos_getenv("WSX_IMGLOG");
+        cap = e ? atoi(e) : 0;
+    }
+    {   /* the previous small hit's first rows, now that its data is in */
+        static int px = -1, py, pw;
+        if (px >= 0) {
+            int r;
+            for (r = 0; r < 16; r++) {
+                unsigned short *q = psxVuw + ((py + r) << 10) + px;
+                wos_log("[img]  row %d: %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x %04x",
+                        py + r, GETLE16(q), GETLE16(q+1), GETLE16(q+2), GETLE16(q+3), GETLE16(q+4), GETLE16(q+5), GETLE16(q+6), GETLE16(q+7), GETLE16(q+8), GETLE16(q+9), GETLE16(q+10), GETLE16(q+11), GETLE16(q+12), GETLE16(q+13), GETLE16(q+14), GETLE16(q+15));
+            }
+            px = -1;
+        }
+        hit = x1 < 768 && x1 + w > 688 && y1 < 161 && y1 + h > 144;
+        if (hit && w <= 64 && h <= 64 && k[0] == 'l' && hits < 300) { px = x1; py = y1; pw = w; }
+        (void)pw;
+    }
+    {   /* SetEnv WSX_IMGFROM f: the general log (WSX_IMGLOG n) from frame f */
+        static int from = -2;
+        if (from == -2) {
+            extern const char *wos_getenv(const char *name);
+            const char *e = wos_getenv("WSX_IMGFROM");
+            from = e ? atoi(e) : 0;
+        }
+        if (framesdone < from && !hit)
+            return;
+    }
+    if (n < cap || (hit && hits < 300)) {
+        if (hit) hits++; else n++;
+        wos_log("[img] %s %d,%d %dx%d -> %d,%d frame %d%s", k, x, y, w, h, x1, y1, framesdone, hit ? " HUDCLUT" : "");
+    }
+    }
+}
+#endif
 static void primLoadImage ( unsigned char * baseAddr )
 {
     unsigned short *sgpuData = ( ( unsigned short * ) baseAddr );
@@ -2566,6 +2660,9 @@ static void primLoadImage ( unsigned char * baseAddr )
     VRAMWrite.y      = GETLEs16 ( &sgpuData[3] ) &iGPUHeightMask;
     VRAMWrite.Width  = GETLEs16 ( &sgpuData[4] );
     VRAMWrite.Height = GETLEs16 ( &sgpuData[5] );
+#ifdef __WARPOS__
+    wos_img_log("load", 0, 0, VRAMWrite.Width, VRAMWrite.Height, VRAMWrite.x, VRAMWrite.y);
+#endif
 
     // clear movie garbage
     if (PSXDisplay.RGB24)
@@ -2924,6 +3021,9 @@ static void primBlkFill ( unsigned char * baseAddr )
     sprtY = GETLEs16 ( &sgpuData[3] ) & iGPUHeightMask;
     sprtW = GETLEs16 ( &sgpuData[4] ) & 0x3ff;
     sprtH = GETLEs16 ( &sgpuData[5] ) & iGPUHeightMask;
+#ifdef __WARPOS__
+    wos_img_log("fill", 0, 0, sprtW, sprtH, sprtX, sprtY);
+#endif
 
     if (sprtW == 0 || sprtH == 0)
     {
@@ -3139,6 +3239,9 @@ static void primMoveImage ( unsigned char * baseAddr )
     imageY1 = GETLEs16 ( &sgpuData[5] ) &iGPUHeightMask;
     imageSX = GETLEs16 ( &sgpuData[6] );
     imageSY = GETLEs16 ( &sgpuData[7] );
+#ifdef __WARPOS__
+    wos_img_log("move", imageX0, imageY0, imageSX, imageSY, imageX1, imageY1);
+#endif
 
     #if defined(DISP_DEBUG) && defined(CMD_LOG_2D)
     logType = 1;

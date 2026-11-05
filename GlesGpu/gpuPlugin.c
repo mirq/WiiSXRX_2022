@@ -463,6 +463,40 @@ if(iLastRGB24 && iLastRGB24!=PSXDisplay.RGB24+1)      // (mdec) garbage check
  }
 iLastRGB24=0;
 
+#ifdef __WARPOS__
+/* The display changed mode (not just its position, which double-buffered
+ * games flip every frame): show what VRAM holds there, as the PSX
+ * does. R-Type Delta loads its 640x480 logo picture in strips, only then
+ * switches to 640x480 interlaced and from then on draws just the blinking
+ * "push start" over it: the strips went up while the old mode was shown,
+ * so the GL screen had only the text. After the next two flips the picture
+ * goes into the new back buffer (both of them), under what the game draws
+ * next (wos_modeup_after).
+ * SetEnv WSX_MODEUP 0: off. */
+static int wos_modeup_after;
+{
+ static int on = -1;
+ static short px, py, pw, ph, pil;
+ if (on < 0) { extern int wos_env_int(const char *, int); on = wos_env_int("WSX_MODEUP", 1); }
+ if (on &&
+     (PSXDisplay.DisplayMode.x != pw || PSXDisplay.DisplayMode.y != ph ||
+      PSXDisplay.Interlaced != pil))
+  {
+   /* a 24-bit (movie) or blanked display: noted once it is shown again */
+   if (PSXDisplay.DisplayMode.x > 0 && PSXDisplay.DisplayMode.y > 0 &&
+       !PSXDisplay.RGB24 && !PSXDisplay.Disabled)
+    {
+     px = PSXDisplay.DisplayPosition.x; py = PSXDisplay.DisplayPosition.y;
+     pw = PSXDisplay.DisplayMode.x; ph = PSXDisplay.DisplayMode.y;
+     pil = PSXDisplay.Interlaced;
+     extern void wos_log(const char *fmt, ...);
+     static int nlog;
+     wos_modeup_after = 2;
+     if (nlog < 40) { nlog++; wos_log("[gpu] display changed: %dx%d at %d,%d shown from VRAM", pw, ph, px, py); }
+    }
+  }
+}
+#endif
 if(PSXDisplay.RGB24)// && !bNeedUploadAfter)          // (mdec) upload wanted?
  {
       PrepareFullScreenUpload(-1);
@@ -559,6 +593,14 @@ else                                                  // no skip ?
  }
 
 iDrawnSomething=0;
+#ifdef __WARPOS__
+if (wos_modeup_after && !PSXDisplay.RGB24)            // VRAM under the next frame
+ {
+  wos_modeup_after--;
+  PrepareFullScreenUpload(-1);
+  UploadScreen(PSXDisplay.Interlaced);
+ }
+#endif
 
 //----------------------------------------------------//
 
@@ -1048,6 +1090,10 @@ static unsigned short usFirstPos=2;
 
 void CALLBACK GL_GPUupdateLace(void)
 {
+#ifdef __WARPOS__
+    { extern void wos_img_watch(const char *); wos_img_watch("lace"); }
+    { extern void wos_tex_release_frees(void); wos_tex_release_frees(); }
+#endif
 if(!(dwActFixes&AUTO_FIX_CHRONO_CROSS))
  STATUSREG^=0x80000000;                               // interlaced bit toggle, if the CC game fix is not active (see gpuReadStatus)
 

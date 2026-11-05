@@ -23,6 +23,7 @@
 #define AKEY_F7       0x56
 #define AKEY_F10      0x59
 #define AKEY_F8       0x57
+#define AKEY_F9       0x58
 #define AKEY_UP_PREFIX 0x80
 
 /* The keyboard's PSX bindings: raw key -> PSXB_* bit. */
@@ -100,6 +101,7 @@ static uint16_t keyboard_buttons(void)
     return b;
 }
 
+int wos_pcprof_key;
 static unsigned handle_key(UWORD code, UWORD qual)
 {
     int down = !(code & AKEY_UP_PREFIX);
@@ -115,6 +117,11 @@ static unsigned handle_key(UWORD code, UWORD qual)
     case AKEY_F5:  return WOS_ACT_SAVESTATE;
     case AKEY_F7:  return WOS_ACT_LOADSTATE;
     case AKEY_F10: return WOS_ACT_FASTFWD;
+    case AKEY_F9: {     /* diagnosis: the PC sampler (WSX_PMC 1 + WSX_PMCPROF) starts now */
+        extern int wos_pcprof_key;
+        wos_pcprof_key = 1;
+        return 0;
+    }
     case AKEY_F8: {     /* diagnosis: the next present into T:shot.ppm, the
                          * frame after next's primitives into the log */
         extern int wos_shot_req, wos_probe_frame, framesdone;

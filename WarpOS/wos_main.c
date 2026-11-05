@@ -410,6 +410,37 @@ void SysUpdate(void)
         frameLimit[0] = frameLimit[0] ? FRAMELIMIT_NONE : FRAMELIMIT_AUTO;
         act &= ~WOS_ACT_FASTFWD;
     }
+    {   /* SetEnv WSX_DMAWATCH addr: the word there, logged when it changes
+         * (once a frame; psxhw.c logs the DMAs that cover it) */
+        static int init;
+        static u32 watch, last;
+        static int n;
+        if (!init) {
+            const char *e = wos_getenv("WSX_DMAWATCH");
+            init = 1;
+            watch = e ? (u32)strtoul(e, NULL, 16) & 0x1ffffc : 0;
+            if (watch) last = SWAP32(*(u32 *)(psxM + watch));
+        }
+        if (watch && n < 200) {
+            u32 v = SWAP32(*(u32 *)(psxM + watch));
+            if (v != last) {
+                n++;
+                wos_log("[dmawatch] word %08lx: %08lx -> %08lx at frame %d (pc %08lx)",
+                        (unsigned long)watch, (unsigned long)last, (unsigned long)v, framesdone,
+                        (unsigned long)psxRegs.pc);
+                wos_log_flush();
+                last = v;
+            }
+        }
+    }
+    {   /* SetEnv WSX_SHOTAT n: the first present after frame n into T:shot.ppm */
+        static int shot_at = -2;
+        extern int wos_shot_req;
+        if (shot_at == -2)
+            shot_at = wos_env_int("WSX_SHOTAT", -1);
+        if (shot_at >= 0 && framesdone == shot_at)
+            wos_shot_req = 1;
+    }
     if (s_auto_frames && framesdone >= s_auto_frames)
         act |= WOS_ACT_QUIT;
     /* SetEnv WSX_LOADSTATE n loads the save state at frame n (benchmarks). */
@@ -419,6 +450,13 @@ void SysUpdate(void)
             load_at = wos_env_int("WSX_LOADSTATE", 0);
         if (load_at > 0 && framesdone == load_at)
             act |= WOS_ACT_LOADSTATE;
+        {   /* SetEnv WSX_SAVESTATE n: save the state at frame n (as F5) */
+            static int save_at = -2;
+            if (save_at == -2)
+                save_at = wos_env_int("WSX_SAVESTATE", -1);
+            if (save_at > 0 && framesdone == save_at)
+                act |= WOS_ACT_SAVESTATE;
+        }
     }
     /* SetEnv WSX_QUIT 1 quits through the normal path (memory cards saved,
      * MiniGL closed): what a remote session uses instead of Break. */
@@ -631,8 +669,9 @@ int main(int argc, char **argv)
     bios_init();
     wos_input_init();
     {
-        extern int wos_nogate, wos_noidle;
+        extern int wos_nogate, wos_noidle, wos_idle_cd;
         wos_nogate = wos_env_int("WSX_NOGATE", 0);
+        wos_idle_cd = wos_env_int("WSX_IDLECD", 0);
         wos_noidle = wos_env_int("WSX_NOIDLE", 0);
         if (wos_nogate || wos_noidle)
             wos_log("event gate %s, idle skip %s", wos_nogate ? "off" : "on", wos_noidle ? "off" : "on");

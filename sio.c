@@ -66,8 +66,17 @@ char McdDisable[2];
 // TODO: add SioModePrescaler and BaudReg
 #define SIO_CYCLES		535
 
+#ifdef __WARPOS__
+void wos_log(const char *fmt, ...);
+static int wos_sio_n;
+#define WOS_SIO_LOG(...) do { if (wos_sio_n < 300) { wos_sio_n++; wos_log(__VA_ARGS__); } } while (0)
+#else
+#define WOS_SIO_LOG(...) do { } while (0)
+#endif
 void sioWrite8(unsigned char value) {
 	int more_data = 0;
+	if (mcdst || (value & 0xf0) == 0x80)
+		WOS_SIO_LOG("[sio] w %02x ctrl %04x stat %04x mcdst %d padst %d parp %d", value, CtrlReg, StatReg, mcdst, padst, parp);
 #ifdef PAD_LOG
 	PAD_LOG("sio write8 %x\n", value);
 #endif
@@ -353,6 +362,8 @@ unsigned char sioRead8() {
 		}
 	}
 
+	if (mcdst)
+		WOS_SIO_LOG("[sio] r %02x parp %d/%d mcdst %d stat %04x", ret, parp, bufcount, mcdst, StatReg);
 #ifdef PAD_LOG
 	PAD_LOG("sio read8 ;ret = %x\n", ret);
 #endif

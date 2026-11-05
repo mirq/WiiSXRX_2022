@@ -178,9 +178,15 @@ int psxMemInit() {
 	return 0;
 }
 
+#ifdef __WARPOS__
+void wos_wwatch_init(void);
+#endif
 void psxMemReset() {
     //printf("BIOS file %s\n",biosFile->name);
   int temp;
+#ifdef __WARPOS__
+  wos_wwatch_init();
+#endif
 	memset(psxM, 0, 0x00200000);
 	memset(psxP, 0xff, 0x00010000);
   memset(psxR, 0, 0x80000);
@@ -338,6 +344,69 @@ u32 psxMemRead32(u32 mem) {
 	}
 }
 
+#ifdef __WARPOS__
+/* SetEnv WSX_WWATCH addr (hex): every store to that word, logged with the
+ * pc and ra (the interpreter has the exact pc; with the dynarec use
+ * WSX_FASTMEM 0 so its stores come through here) */
+u32 wos_wwatch;
+static void wos_wwatch_hit(u32 mem, u32 value, int size)
+{
+	extern void wos_log(const char *fmt, ...);
+	extern void wos_log_flush(void);
+	extern int framesdone;
+	static int n;
+	if (n >= 100)
+		return;
+	n++;
+	wos_log("[wwatch] sw%d %08lx <- %08lx pc %08lx ra %08lx frame %d", size,
+		(unsigned long)mem, (unsigned long)value, (unsigned long)psxRegs.pc,
+		(unsigned long)psxRegs.GPR.n.ra, framesdone);
+	{
+		int i;
+		char line[400];
+		int len = snprintf(line, sizeof line, "[wwatch] regs:");
+		for (i = 1; i < 32 && len < (int)sizeof line - 16; i++)
+			len += snprintf(line + len, sizeof line - len, " %d=%08lx", i, (unsigned long)psxRegs.GPR.r[i]);
+		wos_log("%s", line);
+	}
+	wos_log_flush();
+}
+/* SetEnv WSX_PCWATCH pc (hex, the pc after the store as the interpreter
+ * has it): the runs of consecutive words that store writes (start, end,
+ * ra at the start) */
+u32 wos_pcwatch;
+static void wos_pcwatch_hit(u32 mem)
+{
+	extern void wos_log(const char *fmt, ...);
+	extern void wos_log_flush(void);
+	extern int framesdone;
+	static u32 start, last, ra;
+	static int n;
+	if (start && mem == last + 4) { last = mem; return; }
+	if (start && n < 300) {
+		n++;
+		wos_log("[pcwatch] run %08lx-%08lx (%lu bytes) ra %08lx frame %d", (unsigned long)start,
+			(unsigned long)last + 4, (unsigned long)(last + 4 - start), (unsigned long)ra, framesdone);
+		wos_log_flush();
+	}
+	start = last = mem;
+	ra = psxRegs.GPR.n.ra;
+}
+#define WOS_WWATCH(mem, value, size) do { \
+	if (wos_wwatch && ((mem) & 0x1ffffc) == wos_wwatch) wos_wwatch_hit((mem), (value), (size)); \
+	if (wos_pcwatch && psxRegs.pc == wos_pcwatch) wos_pcwatch_hit(mem); } while (0)
+void wos_wwatch_init(void)
+{
+	extern const char *wos_getenv(const char *name);
+	const char *e = wos_getenv("WSX_WWATCH");
+	wos_wwatch = e ? (u32)strtoul(e, NULL, 16) & 0x1ffffc : 0;
+	e = wos_getenv("WSX_PCWATCH");
+	wos_pcwatch = e ? (u32)strtoul(e, NULL, 16) : 0;
+}
+#else
+#define WOS_WWATCH(mem, value, size) ((void)0)
+#endif
+
 void psxMemWrite8(u32 mem, u32 value) {
 	u32 t;
 
@@ -351,6 +420,7 @@ void psxMemWrite8(u32 mem, u32 value) {
 		char *p = (char *)(psxMemWLUT[t]);
 		if (p != NULL) {
 			*(u8  *)(p + (mem & 0xffff)) = value;
+			WOS_WWATCH(mem, value, 8);
 //#ifdef PSXREC
 			psxCpu->Clear((mem&(~3)), 1);
 //#endif
@@ -380,6 +450,7 @@ void psxMemWrite16(u32 mem, u32 value) {
             // upd xjsxjs197 start
 			//*(u16 *)(p + (mem & 0xffff)) = SWAPu16(value);
 			STORE_SWAP16p((p + (mem & 0xffff)), value);
+			WOS_WWATCH(mem, value, 16);
             // upd xjsxjs197 end
 //#ifdef PSXREC
 			psxCpu->Clear((mem & (~3)), 1);
@@ -411,6 +482,7 @@ void psxMemWrite32(u32 mem, u32 value) {
             // upd xjsxjs197 start
 			//*(u32 *)(p + (mem & 0xffff)) = SWAPu32(value);
 			STORE_SWAP32p((p + (mem & 0xffff)), value);
+			WOS_WWATCH(mem, value, 32);
             // upd xjsxjs197 end
 //#ifdef PSXREC
 			psxCpu->Clear(mem, 1);

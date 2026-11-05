@@ -80,6 +80,15 @@ void psxReset() {
 	psxMemReset();
 
 	memset(&psxRegs, 0, sizeof(psxRegs));
+#ifdef __WARPOS__
+	{	/* SetEnv WSX_CYCLE0 0xf0000000: start the cycle counter near its
+		 * wrap (every ~127 s of PSX time), to test what wraps badly */
+		extern const char *wos_getenv(const char *name);
+		const char *e = wos_getenv("WSX_CYCLE0");
+		if (e && *e)
+			psxRegs.cycle = (u32)strtoul(e, NULL, 0);
+	}
+#endif
 
 	psxRegs.pc = 0xbfc00000; // Start in bootstrap
 
@@ -166,6 +175,7 @@ u32 wos_ev_why[32];     /* what set the next event: counters, a raised irq, 2 + 
 u32 wos_irq_taken[11];  /* irqs taken, by I_STAT bit */
 u32 wos_idle_why[5];    /* idle loop met but not skipped: due, pred, round, branch changed; skipped */
 int wos_nogate, wos_noidle;    /* SetEnv WSX_NOGATE / WSX_NOIDLE 1: off, to compare */
+int wos_idle_cd;                /* SetEnv WSX_IDLECD 1: idle loops skipped while the CD reads too */
 
 /* The interrupts psxBranchTest below services; the others are set in
  * psxRegs.interrupt but never cleared. */
@@ -261,6 +271,17 @@ void psxBranchTest() {
 					}
 					memcpy(wos_idle[i].regs, psxRegs.GPR.r, sizeof(wos_idle[i].regs));
 					wos_idle_why[3]++;
+					/* Not while the drive reads data (XA music streaming is
+					 * fine): R-Type Delta waits in such a
+					 * loop as sectors stream in, and with the clock moved
+					 * from sector to sector it read files wrong (a packed
+					 * file unpacked over its callback table, pc 0xfff1fe30).
+					 * SetEnv WSX_IDLECD 1: skipped then too, as before. */
+					{
+						extern int wos_cd_data_reading(void);
+						if (!wos_idle_cd && wos_cd_data_reading())
+							break;
+					}
 					if (wos_idle_still(&wos_idle[i])) {
 						wos_idle_why[3]--;
 						wos_idle_why[4]++;

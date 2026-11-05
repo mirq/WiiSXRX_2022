@@ -3,8 +3,9 @@
 The WiiSXRX_2022 PlayStation emulator ("WiiStation") as a native WarpOS
 program: the PPC dynarec on the PowerPC card, the GlesGpu hardware renderer
 on a Radeon 9200 through the MiniGL R200 stack, AHI sound, the keyboard and
-the joystick ports as PSX pads. There is no menu: the disc image comes from
-the command line or an ASL file requester.
+the joystick ports as PSX pads. There is no in-game menu: WiiStationGUI, a
+Workbench launcher, picks the disc image and sets the options and ENV:
+variables; the command line and an ASL file requester work as well.
 
 ## What it needs
 
@@ -21,8 +22,10 @@ the command line or an ASL file requester.
 
 ```
 WiiStation/
-    WiiStation          the program
-    WiiStation-R200     launch script (sets the MiniGL environment, starts the host)
+    WiiStation          the program (its icon has the 1 MB stack it needs)
+    WiiStationGUI       the launcher (68k, GadTools): start this one
+    WiiStation-R200     launch script (Stack 1048576, then WiiStation)
+    WiiStation-Vars.txt every ENV: variable and what it does
     minigl_ppc.dll      MiniGL R200, PPC side
     minigl_ppc_host     MiniGL R200, 68k side
     wiistation.cfg      settings
@@ -37,7 +40,31 @@ directories.
 
 ## Running
 
-Cold boot, `C:InitPPC` once, then from the WiiStation drawer:
+Cold boot, `C:InitPPC` once (if your WarpOS setup needs it), then
+double-click **WiiStationGUI**:
+
+- **Disc image**: type a path, press *Pick...* for a file requester, or click
+  an entry of the *Recent* list (double-click starts it; *Forget* removes it).
+- The settings column and the boxes are the emulator's options: CPU core,
+  renderer, pads, BIOS, sound, frame limiter, filtering, memory cards...
+- **Variables...** lists every ENV: variable WiiStation and MiniGL read,
+  grouped (Display, CPU speed, Renderer, CD, Diagnosis, MiniGL...), each with
+  its default, its current ENV: value and an explanation. A value set there
+  applies to every run started from the launcher until you set it back:
+  it goes into ENV: while the game runs and the old value comes back
+  afterwards. *Default* removes the variable from ENV: altogether. The same list is in
+  `WiiStation-Vars.txt`.
+- **Extra ENV:** takes anything else as `NAME=value NAME2=value`, also for
+  the run only.
+- **Start** (or Return) runs the game; the launcher waits and comes back
+  when you quit with Esc. Settings are kept in `WiiStationGUI.prefs`.
+
+The launcher writes `T:WiiStationGo` (`CD` to its drawer and
+`Execute WiiStation-R200 "<image>" Key=value ...`) and clears one-shot
+diagnosis variables (`WSX_QUIT`, `WSX_LOADSTATE`, `WSX_AUTOFRAMES`...) left in
+ENV: by an earlier run.
+
+From a Shell, in the WiiStation drawer:
 
 ```
 Execute WiiStation-R200 DH1:psx/Game.cue
@@ -48,11 +75,13 @@ Execute WiiStation-R200              ; an ASL requester asks for the image
 Images: `.cue`/`.bin`, `.iso`, `.img`/`.ccd`/`.sub`, `.mds`/`.mdf`, `.toc`,
 `.pbp`, `.cbn`, `.chd`, and PSX `.exe` files.
 
-The script leaves `MINIGL_CTILE` unset: GlesGpu reads the framebuffer back
-(screen effects, MDEC/VRAM moves), and a tiled render target reads back
-scrambled. It sets `MGLPPC_CPEMIT=1` (needed for MiniGL's extensions) and
-`MGLPPC_CPPRESENT=1` (the back buffer keeps its pixels after a present, as
-the Wii's EFB does; some games draw on top of the last frame).
+WiiStation sets MiniGL's variables itself when they are not set: it removes
+`MINIGL_CTILE` (GlesGpu reads the framebuffer back, and a tiled render
+target reads back scrambled), sets `MGLPPC_CPEMIT=1` (needed for MiniGL's
+extensions), `MGLPPC_CPPRESENT=1` (the back buffer keeps its pixels after a
+present; some games draw on top of the last frame), `MGLPPC_HOSTPRI=-1` and
+the short TCL vertices (`MGLPPC_TCL6`, `MGLPPC_TCL5`). MiniGL starts
+`minigl_ppc_host` itself.
 
 ## Controls
 
@@ -66,25 +95,23 @@ the Wii's EFB does; some games draw on top of the last frame).
 | Start | Return / Enter | play |
 | Select | Space | play + both shoulders |
 
-Esc or CTRL-C quits (memory cards are saved), F5 saves the state, F7 loads
-it, F10 switches the frame limiter off and on.
+Esc quits (memory cards are saved), F5 saves the state, F7 loads it, F10
+switches the frame limiter off and on, F8 grabs a diagnosis frame.
+
+The joystick ports are read only with `WSX_JOYPORTS=1` (Variables window,
+Sound/Pads): each read is a trip to the 68k of about 5 ms.
 
 ## Settings
 
 `PROGDIR:wiistation.cfg` (format and keys of the Wii's `settingsRX2022.cfg`),
-then `WSX_<Key>` ENV: variables, then `Key=value` arguments; see the sample
-file. ENV: only:
+then `WSX_<Key>` ENV: variables, then `Key=value` arguments (the launcher
+passes its settings this way); see the sample file.
 
-| Variable | Meaning |
-|---|---|
-| `WSX_WIDTH`, `WSX_HEIGHT` | display size (640x480; GlesGpu assumes 640x480 for a few game fixes) |
-| `WSX_WINDOW=1` | a Workbench window instead of a screen |
-| `WSX_VSYNC=1` | wait for the display at every present |
-| `WSX_BILINEAR=0` | no filtering of the software GPUs' frame |
-| `WSX_AHI_MIXRATE` | AHI's mixing rate (44100; 22050 halves the 68k's work) |
-| `WSX_AUTOFRAMES=n` | run n PSX frames, log the frame rate and quit (benchmarks) |
-| `WSX_CLOCK=sys` | GetSysTimePPC instead of the time base |
-| `WSX_GL_NOSCALE=1`, `WSX_GL_NORSUB=1` | don't use MiniGL's 2x scale / B-F extensions |
+Everything else is an ENV: variable: about 90 of them, from display size
+and sound rate to A/B switches for the speed work, diagnosis and MiniGL.
+`WiiStation-Vars.txt` lists them all with defaults and explanations (made
+from `WarpOS/launcher/variables.txt`, which is also compiled into the
+launcher's Variables window). The defaults are the fast, tested settings.
 
 ## The renderer and MiniGL
 
@@ -113,6 +140,13 @@ make -f WarpOS/Makefile.warpos MGL_DIR=/path/to/MiniGL
 
 The link is a relocatable ELF checked for the WarpOS contract (no undefined
 or COMMON symbols, four relocation types, `_start` at `.text+0`);
+The launcher is a 68k program (bebbo's m68k-amigaos-gcc, libnix):
+
+```
+make -C WarpOS/launcher                     # -> build/warpos/WiiStationGUI
+python3 tools/mkicon/mkicon.py WiiStation.info 1048576   # the icons
+```
+
 `tools/elf2warpos/elf2warpos.py` (from OpenSWOS) converts it to the hunk
 executable on Linux, so no Elf2Exe2 run on the Amiga is needed.
 `build/warpos/WiiStation.debug.elf` keeps the symbols for `addr2line`
@@ -139,8 +173,16 @@ select everything WarpOS-specific.
 
 ## State
 
-Built and linked; not yet run on the target. Expect first-run fixes. Known
-gaps: no multitap, lightgun or rumble; no in-emulator menu; per-game
-settings files and PPF patches are not loaded yet; texture uploads go
-through MiniGL's subimage path, whose cost on the R200 stack is not measured
-for this workload.
+Runs on a real A4000/68060 with an MPC7410 WarpOS card and a Radeon 9200 on
+a Prometheus. Frame rates (full speed is 60, or 50 for PAL games):
+
+| Game | Scene | fps |
+|---|---|---|
+| Tekken 3 | a fight | ~59.7 |
+| Crash Bandicoot | a level | ~59.9 |
+| Silent Hill | the town (a 30 Hz game) | 59.8 |
+| Ace Combat 3 (PAL) | a flight (a 25 Hz game) | 49.6-50 |
+| R-Type Delta | stage 1 | ~59 |
+
+Known gaps: no multitap, lightgun or rumble; no in-emulator menu; per-game
+settings files and PPF patches are not loaded yet.

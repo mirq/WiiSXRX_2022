@@ -566,6 +566,36 @@ static void to_565(const GLubyte *src, int pitch, int w, int h)
     }
 }
 
+/* Movie texels straight to BGRA (into s_conv_main): MiniGL keeps every
+ * texture as BGRA32, so a 565 upload was packed here and expanded again
+ * there, texel by texel; a BGRA one is a row copy on its side.
+ * SetEnv WSX_MOV565 1: 565 as before. */
+static int s_mov565 = -1;
+static void to_bgra(const GLubyte *src, int pitch, int w, int h)
+{
+    GLubyte *d = s_conv_main;
+    int x, y;
+    for (y = 0; y < h; y++) {
+        const GLubyte *p = src + (size_t)y * pitch * 4;
+        for (x = 0; x < w; x++, p += 4, d += 4)
+            put_bgra(d, ((unsigned)p[2] << 8) | p[3], 255);
+    }
+}
+static void upload_movie(int x, int y, int w, int h, const GLubyte *data, int pitch, int kind)
+{
+    if (s_mov565 < 0)
+        s_mov565 = wos_env_int("WSX_MOV565", 0);
+    if (s_mov565) {
+        WOS_PROF(WOS_PROF_TEXCONV, to_565(data, pitch, w, h));
+        WOS_UPB(kind, w * h); WOS_PROFUP( glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h,
+                        GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, s_conv_main));
+    } else {
+        WOS_PROF(WOS_PROF_TEXCONV, to_bgra(data, pitch, w, h));
+        WOS_UPB(kind, w * h); WOS_PROFUP( glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h,
+                        MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main));
+    }
+}
+
 /* Replace the bound texture's planes with w x h texels. */
 static int define_texture(int w, int h, const void *data, int rgb24)
 { wosgl_gl_touched();
@@ -576,7 +606,6 @@ static int define_texture(int w, int h, const void *data, int rgb24)
     if (!s_cur || !t->used || w <= 0 || h <= 0 || !ensure_conv(w * h))
         return 0;
     if (rgb24) {
-        WOS_PROF(WOS_PROF_TEXCONV, to_565((const GLubyte *)data, w, w, h));
         if (!switch_planes(t, w, h, FMT_565)) {
             int pw = 1, ph = 1;
             while (pw < w) pw <<= 1;
@@ -592,13 +621,50 @@ static int define_texture(int w, int h, const void *data, int rgb24)
             t->h = h;
             t->pw = pw;
             t->ph = ph;
-            WOS_PROF(WOS_PROF_TEXCONV, to_565((const GLubyte *)data, w, w, h));
         }
         glBindTexture(GL_TEXTURE_2D, t->main);
-        WOS_UPB(5, (w) * (h)); WOS_PROFUP( glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, s_conv_main));
+        upload_movie(0, 0, w, h, (const GLubyte *)data, w, 5);
         return TEX_TYPE_2;
     }
     WOS_PROF(WOS_PROF_TEXCONV, type = split_texels((const GLubyte *)data, w, w, h, rgb24));
+
+    /* A clamped texture of up to 256 x 256 (GlesGpu's screen uploads,
+     * whose area changes size from frame to frame: R-Type Delta's stage
+     * iris made ~1000 MiniGL textures in 300 frames, 86 ms a frame) keeps
+     * 256 x 256 planes and replaces only w x h of them; the draws scale
+     * the coordinates by w/pw. SetEnv WSX_PADUP 0: exact planes. */
+    {
+        static int padup = -1;
+        static GLubyte *zero;
+        if (padup < 0)
+            padup = wos_env_int("WSX_PADUP", 1);
+        if (padup && w <= 256 && h <= 256 && t->wraps != GL_REPEAT && t->wrapt != GL_REPEAT &&
+            (zero || (zero = (GLubyte *)calloc(256 * 256, 4)) != NULL)) {
+            if (!(t->main && t->fmt == FMT_BGRA && t->pw == 256 && t->ph == 256)) {
+                free_planes(t);
+                t->main = make_plane(256, 256, t->wraps, t->wrapt, zero);
+                t->fmt = FMT_BGRA;
+                t->pw = t->ph = 256;
+            }
+            t->w = w;
+            t->h = h;
+            glBindTexture(GL_TEXTURE_2D, t->main);
+            WOS_UPB(1, (w) * (h)); WOS_PROFUP( glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_main));
+            if (type & TEX_TYPE_1) {
+                if (!t->semi)
+                    t->semi = make_plane(256, 256, t->wraps, t->wrapt, zero);
+                glBindTexture(GL_TEXTURE_2D, t->semi);
+                WOS_UPB(1, (w) * (h)); WOS_PROFUP( glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_semi));
+            }
+            if ((type & (TEX_TYPE_1 | TEX_TYPE_2)) == (TEX_TYPE_1 | TEX_TYPE_2) || t->one) {
+                if (!t->one)
+                    t->one = make_plane(256, 256, t->wraps, t->wrapt, zero);
+                glBindTexture(GL_TEXTURE_2D, t->one);
+                WOS_UPB(1, (w) * (h)); WOS_PROFUP( glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, MGL_UBYTE_BGRA, GL_UNSIGNED_BYTE, s_conv_one));
+            }
+            return type;
+        }
+    }
 
     if (!switch_planes(t, w, h, FMT_BGRA)) {
         t->main = make_plane(w, h, t->wraps, t->wrapt, s_conv_main);
@@ -664,10 +730,8 @@ int wosgl_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
         if (cw <= 0 || ch <= 0 || !ensure_conv(cw * ch))
             return 0;
         if (t->fmt == FMT_565) {
-            WOS_PROF(WOS_PROF_TEXCONV, to_565((const GLubyte *)data, width, cw, ch));
             glBindTexture(GL_TEXTURE_2D, t->main);
-            WOS_UPB(7, (cw) * (ch)); WOS_PROFUP( glTexSubImage2D(GL_TEXTURE_2D, 0, xoffset, yoffset, cw, ch,
-                            GL_RGB, MGL_UNSIGNED_SHORT_5_6_5, s_conv_main));
+            upload_movie(xoffset, yoffset, cw, ch, (const GLubyte *)data, width, 7);
             return TEX_TYPE_2;
         }
         wos_tex_subs++;

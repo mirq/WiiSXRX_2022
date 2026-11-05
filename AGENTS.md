@@ -300,8 +300,57 @@ as well. This is how `minigl_ppc.dll` was deployed.
 - `F8` (diagnosis): the next present into `T:shot.ppm` and the frame after
   next's primitives into the log (`[prim]`), for a scene a save state
   cannot hold (Tekken 3's menu goes to its attract demo).
+- Ace Combat 3 (PAL, `SCES02066`, `Work:AceCombat3/AC3.bin`, scripts t9 / t9m
+  without a memory card; `savestates/ac3fly.st0` is a flight): with a memory
+  card the game stalled (two cards: the first "Now Loading"; one card: the
+  mission hub ignored input) and R-Type Delta saw no card: the idle-loop
+  finder skipped the BIOS card driver's wait (0xa000df98) and every card
+  exchange timed out. Kernel loops (first 64 KB) are no longer skipped
+  (`WSX_NOIDLE 1` was the test; `[sio]` lines trace the exchange). Flight
+  49.6-50 fps (25 Hz game; the radar is drawn into VRAM and re-uploaded as
+  textures each frame, ~7 ms), the intro movie ~49.8.
+- The drawing-area clip applies only to areas smaller than the display (a
+  whole buffer's area through mismatched offsets froze Ace Combat 3's
+  screens), and GlesGpu's own `UploadScreen` draws with the full scissor.
+- Block linking: the movie decoder and `WSX_HYB` hooks store the block's pc
+  (they read `psxRegs.pc`); without it Tekken 3's boot broke.
+- Movie frames go to MiniGL as BGRA (`WSX_MOV565 1`: 565 as before); MiniGL's
+  shadow patch has 565-table and BGRA-copy paths (was two divisions a
+  texel). F9 starts the PC sampler (`WSX_PMC 1`, `WSX_PMCPROF n`,
+  `WSX_PMCPROF_AT 999999` so it waits for the key). The GL fps meter is
+  `WSX_SHOWFPS 1` (read every 1024 presents), not `FPS=1`.
+- The log also has `[prof] hw reads a frame` (busiest hardware registers),
+  `[cdr] irq` lines (CD answers) and `[dma]` lines (DMA starts), capped.
+- `C:crc` on the Amiga is CRC-16/XMODEM (Python `binascii.crc_hqx`); run it
+  in the background (`Run >NIL: C:crc file >T:x`) for big files: the
+  bridge's checksum of a 471 MB image hung the bridge.
 - Settings in ENV: are read with `GetVar`; newlib's `getenv()` finds nothing
   under MOS2WOS.
+
+- R-Type Delta (2026-11-05): the idle-loop skip moved the clock while the
+  CD read data, so sectors came faster than the game took them: on the
+  menu path 8 sprite sets were never made (no score bar, red enemies) and a
+  packed file unpacked over the game's callback table (crash, pc
+  0xfff1fe30). No idle skip now while `wos_cd_data_reading()` (cdrom.c; XA
+  streaming still skips); `WSX_IDLECD 1` as before. When a game acts
+  differently on one path, try `WSX_NOIDLE 1` / `WSX_NOGATE 1` early.
+  A sector due while the last interrupt is unacked is held (`WSX_CDSTALL 0`).
+- GlesGpu's texture cache: space a texture gives up (`MarkFree`) becomes
+  free only at the next vsync (`wos_tex_release_frees`, `WSX_TEXQUAR 0`
+  off). Reused at once, the next upload overwrote texels draws of the same
+  frame still sampled and MiniGL drained the GPU first (R-Type Delta's
+  palette cycling: ~5 ms a frame, stage 1 47-51 -> ~59 fps).
+- On a display mode change (size or interlace) the displayed VRAM goes up
+  after the next two flips (GlesGpu `updateDisplayGl`, `WSX_MODEUP 0` off):
+  R-Type Delta's logo screen is a picture loaded before its mode switch.
+- Diagnosis switches: `WSX_SHOTAT n` (first present after frame n into
+  T:shot.ppm), `WSX_SAVESTATE n`, `WSX_DMAWATCH addr` (DMAs into RAM over
+  it, and the word once a frame), `WSX_WWATCH addr` / `WSX_PCWATCH pc`
+  (stores, psxmem.c: exact pc on the interpreter, or the dynarec with
+  `WSX_FASTMEM 0`), `WSX_CDVERIFY 1` / `WSX_CDASYNC 0` (cdriso.c),
+  `WSX_IMGLOG n` + `WSX_IMGFROM f`, `WSX_CYCLE0 x`, `[cdr] setloc` lines.
+- The phone camera (MCP `take_photo`, ~14 s a picture) shows the real
+  monitor; bridge keys held 2 s drive the game.
 
 ## Reading the log
 
@@ -381,3 +430,19 @@ Crash long-view benchmark 48 -> 58 fps. The build schedules for the 7410
 every WarpOS board.
 It is already converted to a hunk executable, so it needs no Elf2Exe2. Resolve
 crash addresses with `addr2line` against `build/warpos/WiiStation.debug.elf`.
+
+## Launcher and releases
+
+- `WiiStationGUI` (`WarpOS/launcher/`, 68k GadTools, `make -C WarpOS/launcher`)
+  picks the image, passes the settings as `Key=value` and writes
+  `T:WiiStationGo` (`CD` + `Execute WiiStation-R200 ...`). Its Variables
+  window comes from `WarpOS/launcher/variables.txt` (`mkvars.py` makes
+  `wsx_vars.h` and `WiiStation-Vars.txt`): add a new `WSX_`/`MGLPPC_`
+  switch there too. Values are set in ENV: for the run and restored after.
+- `WiiStation-R200` no longer sets MiniGL's variables: WiiStation's
+  `wos_mgl_settings` sets them when unset (checked with ENV:MGLPPC#? deleted:
+  Tekken 3 fight 58 fps, all six recreated).
+- `tools/mkrelease.sh <ver> <dll> <host>` builds
+  `build/release/WiiStation-WarpOS-<ver>.lha` (icons from `tools/mkicon`).
+- The bridge's `amiga_dos_command` runs only the first line of a
+  multi-line command: send one command per call.

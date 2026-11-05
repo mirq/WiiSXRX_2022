@@ -218,11 +218,25 @@ unsigned int wos_tex_compress, wos_tex_gc, wos_tex_clearall;  /* for the log */
 uint32_t wos_ts_ticks[4];
 unsigned int wos_ts_probe, wos_ts_hhit;   /* the search's hash: probes, hits */  /* SelectSubTextureS: clut key, cache search, load (incl. upload) */
 unsigned int wos_ts_calls;
+/* Space a texture gave up (MarkFree) becomes free only at the next vsync
+ * (wos_tex_release_frees): reused at once, the next upload overwrote texels
+ * draws of this very frame still sample, and MiniGL waited for the GPU to
+ * finish them (R-Type Delta: its palette cycling invalidates a few textures
+ * a frame, ~5 ms of drains). SetEnv WSX_TEXQUAR 0: free at once. */
+#define WOS_QUAR_MAX 512
+static struct { unsigned char page, x1, dx, y1, dy; unsigned int at; } wos_quar[WOS_QUAR_MAX];
+static int wos_nquar, wos_quar_on = -1;
+unsigned int wos_quar_held, wos_quar_full;   /* for the log */
 static void wos_tex_freed(int page)
 {
  unsigned int p=wosgl_sync_point(),i;
+ int j,k;
  if(page<0) for(i=0;i<MAXSORTTEX_MAX;i++) wos_page_freed_at[i]=p;
  else if(page<MAXSORTTEX_MAX) wos_page_freed_at[page]=p;
+ /* the page's free list was reset: what waits for it is free already */
+ for(j=k=0;j<wos_nquar;j++)
+  if(page>=0 && wos_quar[j].page!=page) wos_quar[k++]=wos_quar[j];
+ wos_nquar=k;
 }
 #endif
 
@@ -817,12 +831,73 @@ void InvalidateWndTextureArea(int X,int Y,int W, int H)
 // same for sort textures
 ////////////////////////////////////////////////////////////////////////
 
+#ifdef __WARPOS__
+static void MarkFreeRect(int page, unsigned char x1, unsigned char dx, unsigned char y1, unsigned char dy)
+{
+ EXLong * ul, * uls;
+ int j,iMax;
+ uls=pxSsubtexLeft[page];
+ iMax=GETLE32((unsigned long *)(uls));ul=uls+1;
+ if(!iMax) return;
+ for(j=0;j<iMax;j++,ul++)
+  if(ul->l==0xffffffff) break;
+ if(j<CSUBSIZE-2)
+  {
+   if(j==iMax) PUTLE32((unsigned long *)(uls), GETLE32((unsigned long *)(uls)) + 1);
+   ul->c.x1=x1;
+   ul->c.x2=dx;
+   ul->c.y1=y1;
+   ul->c.y2=dy;
+  }
+}
+
+/* Once a frame (GL_GPUupdateLace): the space given up since the last one. */
+void wos_tex_release_frees(void)
+{
+ int j;
+ for(j=0;j<wos_nquar;j++)
+  {
+   int pg=wos_quar[j].page;
+   MarkFreeRect(pg,wos_quar[j].x1,wos_quar[j].dx,wos_quar[j].y1,wos_quar[j].dy);
+   if(pg<MAXSORTTEX_MAX && (int)(wos_quar[j].at-wos_page_freed_at[pg])>0)
+    wos_page_freed_at[pg]=wos_quar[j].at;
+  }
+ wos_nquar=0;
+}
+#endif
+
 void MarkFree(textureSubCacheEntryS * tsx)
 {
  EXLong * ul, * uls;
  int j,iMax;unsigned char x1,y1,dx,dy;
 #ifdef __WARPOS__
- wos_tex_freed(tsx->cTexID);
+ if(wos_quar_on<0)
+  {
+   extern int wos_env_int(const char *name, int def);
+   wos_quar_on=wos_env_int("WSX_TEXQUAR",1);
+  }
+ if(wos_quar_on && pxSsubtexLeft[tsx->cTexID] && GETLE32((unsigned long *)(pxSsubtexLeft[tsx->cTexID])))
+  {
+   if(wos_nquar<WOS_QUAR_MAX)
+    {
+     x1=tsx->posTX;dx=tsx->pos.c.x2-tsx->pos.c.x1;
+     if(tsx->posTX) {x1--;dx+=3;}
+     y1=tsx->posTY;dy=tsx->pos.c.y2-tsx->pos.c.y1;
+     if(tsx->posTY) {y1--;dy+=3;}
+     wos_quar[wos_nquar].page=(unsigned char)tsx->cTexID;
+     wos_quar[wos_nquar].x1=x1; wos_quar[wos_nquar].dx=dx;
+     wos_quar[wos_nquar].y1=y1; wos_quar[wos_nquar].dy=dy;
+     wos_quar[wos_nquar].at=wosgl_sync_point();
+     wos_nquar++;
+     wos_quar_held++;
+     return;
+    }
+   wos_quar_full++;
+  }
+ {
+  unsigned int p=wosgl_sync_point();
+  if(tsx->cTexID<MAXSORTTEX_MAX) wos_page_freed_at[tsx->cTexID]=p;
+ }
 #endif
 
  uls=pxSsubtexLeft[tsx->cTexID];

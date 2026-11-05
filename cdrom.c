@@ -463,6 +463,9 @@ static const u8 *rip_rebuild(const u8 *buf)
 	SetResultSize_(size); \
 }
 
+#ifdef __WARPOS__
+void wos_log(const char *fmt, ...);
+#endif
 static void setIrq(u8 irq, int log_cmd)
 {
 	u8 old = cdr.IrqStat & cdr.IrqMask ? 1 : 0;
@@ -471,6 +474,17 @@ static void setIrq(u8 irq, int log_cmd)
 	cdr.IrqStat = irq;
 	if ((old ^ new_) & new_)
 		psxHu32ref(0x1070) |= SWAP32((u32)0x4);
+#ifdef __WARPOS__
+	{   /* the CD's answers (but the per-sector data-ready ones), for the log */
+		static int n;
+		if (log_cmd != 0x1001 && log_cmd != 0x1004 && log_cmd != 0x1005 && n < 1500) {
+			n++;
+			wos_log("[cdr] irq %d for %04x, mask %02x%s, result %02x %02x, cycle %08lx",
+			        irq, log_cmd, cdr.IrqMask, (old ^ new_) & new_ ? "" : " (not raised)",
+			        cdr.Result[0], cdr.Result[1], (unsigned long)psxRegs.cycle);
+		}
+	}
+#endif
 }
 
 // timing used in this function was taken from tests on real hardware
@@ -1009,6 +1023,16 @@ void cdrInterrupt(void) {
 				Cmd, ParamC, cdr.Param[0], cdr.Param[1], cdr.Param[2], cdr.Param[3],
 				cdr.Mode, (unsigned long)psxRegs.cycle);
 			wos_log_flush();
+		}
+		else if (Cmd == 2) {
+			/* every seek after those, with the frame: which files a path
+			 * reads (R-Type Delta's menu and demo paths load different data) */
+			extern int framesdone;
+			static int m;
+			if (m < 4000) {
+				m++;
+				wos_log("[cdr] setloc %02x:%02x:%02x frame %d", cdr.Param[0], cdr.Param[1], cdr.Param[2], framesdone);
+			}
 		}
 	}
 #endif
@@ -1617,6 +1641,15 @@ static void cdrPrepCdda(s16 *buf, int samples)
 #endif
 }
 
+#ifdef __WARPOS__
+/* Whether the drive reads data (not XA audio) for the game right now: the
+ * idle-loop skip waits then (r3000a.c). */
+int wos_cd_data_reading(void)
+{
+	return (psxRegs.interrupt & (1 << PSXINT_CDREAD)) && !(cdr.Mode & MODE_STRSND);
+}
+#endif
+
 static void cdrReadInterruptSetResult(unsigned char result)
 {
 	if (cdr.IrqStat) {
@@ -1678,6 +1711,39 @@ static void cdrReadInterrupt(void)
 		return;
 	}
 
+#ifdef __WARPOS__
+	{
+		/* The game has not acknowledged the last interrupt yet: hold this
+		 * sector a little (up to 16 times a quarter sector) instead of
+		 * reading it into a buffer the game will not see. Dropped, it is
+		 * lost: R-Type Delta, which polls GetStat while reading, lost
+		 * sectors 2-4 of its stage file (8 sprite sets with the score bar's
+		 * and the enemies' palettes never made) and later part of a packed
+		 * file whose unpacking then ran over the game's callback table
+		 * (pc 0xfff1fe30). The game is late only because of emulated
+		 * timing. SetEnv WSX_CDSTALL 0: dropped, as before. */
+		static int on = -1, stalls;
+		if (on < 0) {
+			extern int wos_env_int(const char *name, int def);
+			on = wos_env_int("WSX_CDSTALL", 1);
+		}
+		if (on && cdr.IrqStat && stalls < 16) {
+			stalls++;
+			CDRPLAYREAD_INT(cdReadTime / 4, 0);
+			return;
+		}
+		if (stalls) {
+			static int n;
+			if (n < 30) {
+				n++;
+				wos_log("[cdr] sector %02d:%02d:%02d held %d times for the ack%s",
+					cdr.SetSectorPlay[0], cdr.SetSectorPlay[1], cdr.SetSectorPlay[2],
+					stalls, cdr.IrqStat ? " (still not acknowledged)" : "");
+			}
+		}
+		stalls = 0;
+	}
+#endif
 	// note: CdlGetlocL should work as soon as STATUS_READ is indicated
 	SetPlaySeekRead(cdr.StatP, STATUS_READ | STATUS_ROTATING);
 	cdr.DriveState = DRIVESTATE_PLAY_READ;

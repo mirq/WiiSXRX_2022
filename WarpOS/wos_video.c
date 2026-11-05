@@ -606,6 +606,17 @@ void wos_video_frame_stats(void)
                             wos_untex_why[2], wos_untex_why[3], wos_untex_why[4], wos_untex_why[5]);
                     memset(wos_untex_why, 0, sizeof wos_untex_why);
                     wos_untex_merged = 0; }
+                  { extern unsigned int wos_hw_hist[4096];   /* the busiest hardware reads */
+                    char l[200]; int n = 0, k, i;
+                    for (k = 0; k < 6; k++) {
+                        int best = 0;
+                        for (i = 1; i < 4096; i++) if (wos_hw_hist[i] > wos_hw_hist[best]) best = i;
+                        if (!wos_hw_hist[best]) break;
+                        n += snprintf(l + n, sizeof l - n, " 1f80%04x %u", best * 2 + 0x0000, wos_hw_hist[best] / (unsigned)s_stat_frames);
+                        wos_hw_hist[best] = 0;
+                    }
+                    wos_log("[prof] hw reads a frame:%s", l);
+                    memset(wos_hw_hist, 0, sizeof wos_hw_hist); }
                   { extern unsigned int wos_lane_joins, wos_lane_flush[3];
                     wos_log("[prof] second lane: %u joins a frame; flushed by overlap %u, room %u, a third state %u",
                             wos_lane_joins / (unsigned)s_stat_frames, wos_lane_flush[0], wos_lane_flush[1], wos_lane_flush[2]);

@@ -27,6 +27,7 @@
 #include "psxhw.h"
 #ifdef __WARPOS__
 unsigned int wos_hw_reads; /* a loop that reads hardware is not idle (WarpOS/wos_idle.c) */
+unsigned int wos_hw_hist[4096];   /* reads by halfword of the 1f80xxxx page ([prof] hw reads) */
 #endif
 #include "mdec.h"
 #include "cdrom.h"
@@ -74,8 +75,52 @@ void psxHwWriteImask(u32 value)
     }
 }
 
+#ifdef __WARPOS__
+void wos_log(const char *fmt, ...);
+/* DMA starts (but the GPU's command lists), for the log */
+static void wos_dma_log(int n, u32 madr, u32 bcr, u32 chcr)
+{
+    static int k;
+    {   /* SetEnv WSX_DMAWATCH addr: every DMA into RAM that covers addr */
+        static int init;
+        static u32 watch;
+        if (!init) {
+            extern const char *wos_getenv(const char *name);
+            const char *e = wos_getenv("WSX_DMAWATCH");
+            init = 1;
+            watch = e ? (u32)strtoul(e, NULL, 16) & 0x1ffffc : 0;
+        }
+        if (watch && (chcr & 0x01000000) && !(chcr & 1) && n != 2) {
+            extern int framesdone;
+            static int nw;
+            u32 a = madr & 0x1ffffc, words = (bcr >> 16) ? (bcr >> 16) * (bcr & 0xffff) : (bcr & 0xffff);
+            u32 lo = a, hi = a + words * 4;
+            if (n == 6) { lo = a - words * 4 + 4; hi = a + 4; }
+            if (words == 0) words = 0x10000;
+            if (watch >= lo && watch < hi && nw < 200) {
+                nw++;
+                wos_log("[dmawatch] ch %d writes %08lx-%08lx over %08lx: madr %08lx bcr %08lx chcr %08lx frame %d pc %08lx",
+                        n, (unsigned long)lo, (unsigned long)hi, (unsigned long)watch, (unsigned long)madr,
+                        (unsigned long)bcr, (unsigned long)chcr, framesdone, (unsigned long)psxRegs.pc);
+                { extern void wos_log_flush(void); wos_log_flush(); }
+            }
+        }
+    }
+    if (k >= 800 || !(chcr & 0x01000000) || n == 3 || n == 6 || (n == 2 && (chcr & 0x600) == 0x400))
+        return;
+    k++;
+    wos_log("[dma] ch %d madr %08lx bcr %08lx chcr %08lx dpcr %08lx icr %08lx cycle %08lx", n,
+            (unsigned long)madr, (unsigned long)bcr, (unsigned long)chcr,
+            (unsigned long)LOAD_SWAP32p(psxHAddr(0x10f0)), (unsigned long)LOAD_SWAP32p(psxHAddr(0x10f4)),
+            (unsigned long)psxRegs.cycle);
+}
+#define WOS_DMA_LOG(n, madr, bcr, value) wos_dma_log(n, LOAD_SWAP32p(psxHAddr(madr)), LOAD_SWAP32p(psxHAddr(bcr)), value)
+#else
+#define WOS_DMA_LOG(n, madr, bcr, value)
+#endif
 #define DmaExec(char, bcr, madr, n) { \
     STORE_SWAP32p(psxHAddr(char), value); \
+    WOS_DMA_LOG(n, madr, bcr, value); \
  \
     if (value & 0x01000000 && LOAD_SWAP32p(psxHAddr(0x10f0)) & (8u << (n * 4))) { \
         psxDma##n(LOAD_SWAP32p(psxHAddr(madr)), LOAD_SWAP32p(psxHAddr(bcr)), value); \
@@ -143,6 +188,7 @@ u32 psxHwReadGpuSRbusyHack(void)
 u8 psxHwRead8(u32 add) {
 #ifdef __WARPOS__
 	wos_hw_reads++;
+	wos_hw_hist[(add >> 1) & 0xfff]++;
 #endif
     u8 hard;
 
@@ -199,6 +245,7 @@ u8 psxHwRead8(u32 add) {
 u16 psxHwRead16(u32 add) {
 #ifdef __WARPOS__
 	wos_hw_reads++;
+	wos_hw_hist[(add >> 1) & 0xfff]++;
 #endif
     unsigned short hard;
 
@@ -252,6 +299,7 @@ u16 psxHwRead16(u32 add) {
 u32 psxHwRead32(u32 add) {
 #ifdef __WARPOS__
 	wos_hw_reads++;
+	wos_hw_hist[(add >> 1) & 0xfff]++;
 #endif
     u32 hard;
 
