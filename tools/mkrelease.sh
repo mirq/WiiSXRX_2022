@@ -1,8 +1,10 @@
 #!/bin/sh
 # Build the WarpOS release archive: build/release/WiiStation-WarpOS-<ver>.lha
-# usage: tools/mkrelease.sh <version> <minigl_ppc.dll> <minigl_ppc_host>
+# usage: tools/mkrelease.sh <version> <minigl_ppc.dll> <minigl_ppc_host> [<r200 dir>]
+# <r200 dir> holds minigl.library, Radeon9200.chip, Prometheus.card,
+# THIRD_PARTY_NOTICES.txt and R200_MICROCODE_LICENSE.txt (the 68k stack).
 set -e
-VER=${1:?version}; DLL=${2:?minigl_ppc.dll}; HOST=${3:?minigl_ppc_host}
+VER=${1:?version}; DLL=${2:?minigl_ppc.dll}; HOST=${3:?minigl_ppc_host}; R200=$4
 cd "$(dirname "$0")/.."
 make -f WarpOS/Makefile.warpos -j"$(nproc)" >/dev/null
 make -C WarpOS/launcher >/dev/null
@@ -11,7 +13,13 @@ rm -rf "$OUT"; mkdir -p "$D/bios" "$D/memcards" "$D/savestates"
 cp build/warpos/WiiStation build/warpos/WiiStationGUI build/warpos/WiiStation-Vars.txt "$D/"
 cp release/WarpOS/WiiStation-R200 release/WarpOS/wiistation.cfg "$D/"
 cp "$DLL" "$D/minigl_ppc.dll"; cp "$HOST" "$D/minigl_ppc_host"
-cp WarpOS/README.md "$D/ReadMe.md"; cp Docs/License.txt "$D/License.txt"
+cp WarpOS/README.md "$D/ReadMe.md"; cp LICENSE "$D/License.txt"
+if [ -n "$R200" ]; then
+  R=$D/R200-Driver; mkdir -p "$R/Libs/Picasso96"
+  cp "$R200/minigl.library" "$R/Libs/"
+  cp "$R200/Radeon9200.chip" "$R200/Prometheus.card" "$R/Libs/Picasso96/"
+  cp "$R200/THIRD_PARTY_NOTICES.txt" "$R200/R200_MICROCODE_LICENSE.txt" release/WarpOS/R200/Install-R200.txt "$R/"
+fi
 python3 tools/mkicon/mkicon.py "$D/WiiStation.info" 1048576
 python3 tools/mkicon/mkicon.py "$D/WiiStationGUI.info" 16384 play
 python3 tools/mkicon/mkicon.py "$OUT/WiiStation.info" 0 drawer

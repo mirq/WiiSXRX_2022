@@ -1,0 +1,40 @@
+The Radeon 9200 (R200) stack for WiiStation
+===========================================
+
+WiiStation draws through MiniGL on a Radeon 9200 in a Prometheus PCI
+board. The 68k side of that stack is here:
+
+  Libs/minigl.library              -> LIBS:minigl.library
+  Libs/Picasso96/Radeon9200.chip   -> LIBS:Picasso96/Radeon9200.chip
+  Libs/Picasso96/Prometheus.card   -> LIBS:Picasso96/Prometheus.card
+
+Back up the files you replace first. Radeon9200.chip and Prometheus.card
+are a matched pair: install both. (minigl_ppc.dll and minigl_ppc_host, the
+PPC side, are in the WiiStation drawer already.)
+
+Picasso96 itself (with its monitor file in DEVS:Monitors) is not included:
+use the one of your Picasso96 install. The monitor icon's ToolTypes on the
+machine this release was tested on (edit them with Workbench's
+Information window):
+
+  BOARDTYPE=Prometheus
+  IGNOREMASK=Yes
+  DMASize=1024K
+  CP=YES
+  Output=VGA
+  Interrupt=Yes
+
+CP=YES is needed for the 3D service that MiniGL uses; DMASize must leave
+at least 4 MiB of the Radeon's memory for Picasso96. Reboot after
+installing.
+
+Versions: Radeon9200.chip 3.1 (19.10.2026), Prometheus.card 7.602
+(12.08.2026), minigl.library 12.0 (2.9.2026), tested with this release on
+an A4000/68060, MPC7410 WarpOS card and Radeon 9200.
+
+Sources:
+  https://github.com/mirq/r200-p96-driver   (Radeon9200.chip, Prometheus.card)
+  https://github.com/mirq/minigl_wip        (MiniGL, branch wiistation)
+
+The licences of parts of the driver are in THIRD_PARTY_NOTICES.txt and
+R200_MICROCODE_LICENSE.txt.
