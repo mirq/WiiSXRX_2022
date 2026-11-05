@@ -1,5 +1,5 @@
 # WiiStationGUI: the 68k launcher (bebbo's m68k-amigaos-gcc, libnix).
-CC     ?= /opt/amiga/bin/m68k-amigaos-gcc
+CC     := /opt/amiga/bin/m68k-amigaos-gcc
 OUT    := ../../build/warpos/WiiStationGUI
 VARS   := ../../build/warpos/WiiStation-Vars.txt
 CFLAGS := -noixemul -Os -m68020 -Wall -Wno-pointer-sign -fomit-frame-pointer
