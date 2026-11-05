@@ -42,7 +42,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static const char version[] = "$VER: WiiStationGUI 1.0 (05.11.2026)";
+static const char version[] = "$VER: WiiStationGUI 0.1 (05.11.2026)";
 
 struct Library *GadToolsBase;
 struct Library *AslBase;
